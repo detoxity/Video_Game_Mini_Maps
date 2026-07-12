@@ -1,0 +1,435 @@
+#include <stdio.h>
+#include <string.h>
+#include "driver/gpio.h"
+#include "nvs.h"
+
+#include "app_config.h"
+#include "app_state.h"
+#include "ui_overlays.h"
+#include "bsp/esp-bsp.h"
+#include "GPS_UART_Driver.h"
+
+#if SHOW_PERF
+#include "PerfMeter.h"
+#endif
+#if USE_PMU
+#include "AXP2101_PMU.h"
+#endif
+
+// ---------------------------------------------------------------- widgets
+#if SHOW_SPEED
+static lv_obj_t *speed_label = NULL;
+#endif
+#if SHOW_BATTERY
+static lv_obj_t *batt_label = NULL;
+static bool batt_visible = true;
+#endif
+#if SHOW_PERF
+static lv_obj_t *perf_label = NULL;
+static lv_obj_t *rec_dot = NULL;
+static bool record_mode = false;
+static lv_obj_t *hist_panel = NULL;
+static lv_obj_t *hist_list = NULL;
+#endif
+
+bool overlays_battery_visible(void) {
+#if SHOW_BATTERY
+    return batt_visible;
+#else
+    return true;
+#endif
+}
+
+// ---------------------------------------------------------------- history
+#if SHOW_PERF
+struct PerfRecord {
+    float t60, t100, t100_200, t402, v402;
+};
+static PerfRecord history[HISTORY_MAX];
+static int history_count = 0;
+
+static void history_save(void) {
+    nvs_handle_t h;
+    if (nvs_open("minimap", NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_blob(h, "runs", history, history_count * sizeof(PerfRecord));
+        nvs_commit(h);
+        nvs_close(h);
+    }
+}
+
+static void history_load(void) {
+    nvs_handle_t h;
+    if (nvs_open("minimap", NVS_READONLY, &h) == ESP_OK) {
+        size_t len = sizeof(history);
+        if (nvs_get_blob(h, "runs", history, &len) == ESP_OK) {
+            history_count = len / sizeof(PerfRecord);
+        }
+        nvs_close(h);
+    }
+}
+
+static void history_refresh_list(void);
+
+static void history_add(const perf_results_t *r) {
+    if (history_count >= HISTORY_MAX) {
+        // drop the oldest
+        memmove(&history[0], &history[1], (HISTORY_MAX - 1) * sizeof(PerfRecord));
+        history_count = HISTORY_MAX - 1;
+    }
+    history[history_count++] = PerfRecord{r->t_0_60, r->t_0_100, r->t_100_200, r->t_402m, r->v_402m_kmh};
+    history_save();
+}
+
+static void history_delete(int index) {
+    if (index < 0 || index >= history_count) return;
+    memmove(&history[index], &history[index + 1], (history_count - 1 - index) * sizeof(PerfRecord));
+    history_count--;
+    history_save();
+    history_refresh_list();
+}
+
+// swipe an entry to the left to delete it
+static void hist_item_event_cb(lv_event_t *e) {
+    static int32_t swipe_x = 0;
+    static bool consumed = false;
+
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_PRESSED) {
+        swipe_x = 0;
+        consumed = false;
+        return;
+    }
+    if (code != LV_EVENT_PRESSING || consumed) return;
+
+    lv_indev_t *indev = lv_indev_active();
+    if (!indev) return;
+    lv_point_t v;
+    lv_indev_get_vect(indev, &v);
+    swipe_x += v.x;
+
+    if (swipe_x < -60) {
+        consumed = true;
+        history_delete((int)(intptr_t)lv_event_get_user_data(e));
+    }
+}
+
+static void fmt_time(char *dst, size_t n, float t) {
+    if (t >= 0) snprintf(dst, n, "%.2fs", t);
+    else        snprintf(dst, n, "-");
+}
+
+static void history_refresh_list(void) {
+    lv_obj_clean(hist_list);
+
+    if (history_count == 0) {
+        lv_obj_t *lbl = lv_label_create(hist_list);
+        lv_obj_set_style_text_color(lbl, PALETTE_GREY, 0);
+        lv_label_set_text(lbl, "no runs yet");
+        return;
+    }
+
+    // newest first
+    for (int i = history_count - 1; i >= 0; i--) {
+        PerfRecord *r = &history[i];
+        lv_obj_t *item = lv_obj_create(hist_list);
+        lv_obj_set_width(item, lv_pct(100));
+        lv_obj_set_height(item, LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_color(item, PALETTE_DARK_GREY, 0);
+        lv_obj_set_style_bg_opa(item, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(item, 0, 0);
+        lv_obj_set_style_radius(item, 6, 0);
+        lv_obj_set_style_pad_all(item, 8, 0);
+        lv_obj_remove_flag(item, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_event_cb(item, hist_item_event_cb, LV_EVENT_PRESSED, (void *)(intptr_t)i);
+        lv_obj_add_event_cb(item, hist_item_event_cb, LV_EVENT_PRESSING, (void *)(intptr_t)i);
+
+        char t60[16], t100[16], t12[16], t402[24];
+        fmt_time(t60, sizeof(t60), r->t60);
+        fmt_time(t100, sizeof(t100), r->t100);
+        fmt_time(t12, sizeof(t12), r->t100_200);
+        if (r->t402 >= 0) snprintf(t402, sizeof(t402), "%.2fs @%.0f", r->t402, r->v402);
+        else              snprintf(t402, sizeof(t402), "-");
+
+        lv_obj_t *lbl = lv_label_create(item);
+        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_color(lbl, PALETTE_WHITE, 0);
+        lv_label_set_text_fmt(lbl, "#%d  60: %s  100: %s\n100-200: %s  402m: %s",
+                              i + 1, t60, t100, t12, t402);
+    }
+}
+
+static void history_build_screen(lv_obj_t *parent) {
+    hist_panel = lv_obj_create(parent);
+    lv_obj_set_size(hist_panel, BSP_LCD_H_RES, BSP_LCD_V_RES);
+    lv_obj_center(hist_panel);
+    lv_obj_set_style_bg_color(hist_panel, PALETTE_BLACK, 0);
+    lv_obj_set_style_bg_opa(hist_panel, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(hist_panel, 0, 0);
+    lv_obj_set_style_radius(hist_panel, 0, 0);
+    lv_obj_set_style_pad_all(hist_panel, 0, 0);
+    lv_obj_remove_flag(hist_panel, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *title = lv_label_create(hist_panel);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_color(title, PALETTE_NFS_CITRUS, 0);
+    lv_label_set_text(title, "RESULTS");
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 14);
+
+    lv_obj_t *hint = lv_label_create(hist_panel);
+    lv_obj_set_style_text_font(hint, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(hint, PALETTE_GREY, 0);
+    lv_label_set_text(hint, "swipe left = delete  |  hold BOOT = close");
+    lv_obj_align(hint, LV_ALIGN_TOP_MID, 0, 44);
+
+    hist_list = lv_obj_create(hist_panel);
+#ifdef BSP_BOARD_WS_S3_TOUCH_LCD_1_85
+    // round screen: inset the list so it stays inside the circle
+    lv_obj_set_size(hist_list, BSP_LCD_H_RES - 80, BSP_LCD_V_RES - 110);
+#else
+    lv_obj_set_size(hist_list, BSP_LCD_H_RES - 16, BSP_LCD_V_RES - 70);
+#endif
+    lv_obj_align(hist_list, LV_ALIGN_BOTTOM_MID, 0, -6);
+    lv_obj_set_style_bg_opa(hist_list, LV_OPA_0, 0);
+    lv_obj_set_style_border_width(hist_list, 0, 0);
+    lv_obj_set_style_pad_all(hist_list, 2, 0);
+    lv_obj_set_style_pad_row(hist_list, 6, 0);
+    lv_obj_set_flex_flow(hist_list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_scroll_dir(hist_list, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(hist_list, LV_SCROLLBAR_MODE_OFF);
+
+    lv_obj_add_flag(hist_panel, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void history_toggle(void) {
+    if (lv_obj_has_flag(hist_panel, LV_OBJ_FLAG_HIDDEN)) {
+        history_refresh_list();
+        lv_obj_remove_flag(hist_panel, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(hist_panel, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+#endif // SHOW_PERF
+
+// ---------------------------------------------------------------- create
+void overlays_create(lv_obj_t *parent) {
+#if SHOW_SPEED
+    speed_label = lv_label_create(parent);
+    lv_obj_set_style_text_font(speed_label, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_color(speed_label, PALETTE_WHITE, 0);
+    lv_label_set_text(speed_label, "GPS...");
+    lv_obj_align(speed_label, LV_ALIGN_BOTTOM_MID, 0, -30);
+#endif
+
+#if SHOW_BATTERY
+    batt_label = lv_label_create(parent);
+    lv_obj_set_style_text_font(batt_label, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(batt_label, PALETTE_WHITE, 0);
+    lv_obj_set_style_bg_color(batt_label, PALETTE_BLACK, 0);
+    lv_obj_set_style_bg_opa(batt_label, LV_OPA_50, 0);
+    lv_obj_set_style_pad_hor(batt_label, 6, 0);
+    lv_obj_set_style_pad_ver(batt_label, 2, 0);
+    lv_obj_set_style_radius(batt_label, 4, 0);
+    lv_label_set_text(batt_label, "-.--V");
+#ifdef BSP_BOARD_WS_S3_TOUCH_LCD_1_85
+    // round screen: the physical corner is clipped, keep inside the circle
+    lv_obj_align(batt_label, LV_ALIGN_TOP_LEFT, 52, 46);
+#else
+    lv_obj_align(batt_label, LV_ALIGN_TOP_LEFT, 8, 6);
+#endif
+
+    // restore the saved show/hide state (persisted at shutdown)
+    {
+        nvs_handle_t h;
+        if (nvs_open("minimap", NVS_READONLY, &h) == ESP_OK) {
+            uint8_t shown = 1;
+            if (nvs_get_u8(h, "batt_show", &shown) == ESP_OK) {
+                batt_visible = shown;
+            }
+            nvs_close(h);
+        }
+    }
+    if (!batt_visible) {
+        lv_obj_add_flag(batt_label, LV_OBJ_FLAG_HIDDEN);
+    }
+#endif
+
+#if SHOW_PERF
+    perf_label = lv_label_create(parent);
+    lv_obj_set_style_text_font(perf_label, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(perf_label, PALETTE_NFS_CITRUS, 0);
+    lv_obj_set_style_text_align(perf_label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_bg_color(perf_label, PALETTE_BLACK, 0);
+    lv_obj_set_style_bg_opa(perf_label, LV_OPA_60, 0);
+    lv_obj_set_style_pad_all(perf_label, 6, 0);
+    lv_obj_set_style_radius(perf_label, 6, 0);
+    lv_obj_align(perf_label, LV_ALIGN_CENTER, 0, -70);
+    lv_obj_add_flag(perf_label, LV_OBJ_FLAG_HIDDEN);
+
+    // record-mode indicator (BOOT double-click)
+    rec_dot = lv_obj_create(parent);
+    lv_obj_set_size(rec_dot, 14, 14);
+    lv_obj_set_style_radius(rec_dot, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(rec_dot, PALETTE_NFS_RED, 0);
+    lv_obj_set_style_bg_opa(rec_dot, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(rec_dot, 0, 0);
+#ifdef BSP_BOARD_WS_S3_TOUCH_LCD_1_85
+    lv_obj_align(rec_dot, LV_ALIGN_TOP_RIGHT, -54, 48);   // inside the circle
+#else
+    lv_obj_align(rec_dot, LV_ALIGN_TOP_RIGHT, -15, 20);
+#endif
+    lv_obj_add_flag(rec_dot, LV_OBJ_FLAG_HIDDEN);
+
+    history_load();
+    history_build_screen(parent);
+#endif
+
+    // BOOT button as a plain input (it's free after boot)
+    gpio_config_t btn_cfg = {
+        .pin_bit_mask = 1ULL << BOOT_BUTTON_GPIO,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&btn_cfg);
+}
+
+// ---------------------------------------------------------------- tick
+static void tick_speed(void) {
+#if SHOW_SPEED
+    static uint32_t t = 0;
+    if (lv_tick_elaps(t) < 200) return;
+    t = lv_tick_get();
+    if (receiving_data) {
+        lv_label_set_text_fmt(speed_label, "%d km/h", (int)(gps_speed_kmh + 0.5f));
+    }
+#endif
+}
+
+static void tick_battery(void) {
+#if SHOW_BATTERY
+    static uint32_t t = 0;
+    if (lv_tick_elaps(t) < 1000) return;
+    t = lv_tick_get();
+#if USE_PMU
+    int mv = pmu_battery_voltage_mv();
+#else
+    int mv = -1;
+#endif
+    if (mv > 0) {
+        lv_label_set_text_fmt(batt_label, "%d.%02dV  %dsat", mv / 1000, (mv % 1000) / 10, gps_sat_count);
+    } else {
+        lv_label_set_text_fmt(batt_label, "-.--V  %dsat", gps_sat_count);
+    }
+#endif
+}
+
+static void tick_perf(void) {
+#if SHOW_PERF
+    // show timing results while a run is active and for 30s after
+    static uint32_t last_seq = 0;
+    static uint32_t shown_tick = 0;
+    uint32_t pseq = perf_seq();
+    if (pseq != last_seq && record_mode) {
+        last_seq = pseq;
+        shown_tick = lv_tick_get();
+
+        perf_results_t r;
+        perf_get_results(&r);
+        char buf[96];
+        int n = 0;
+        if (r.run_active && r.t_0_60 < 0) {
+            n = snprintf(buf, sizeof(buf), "RUN!");
+        }
+        if (r.t_0_60 >= 0)
+            n += snprintf(buf + n, sizeof(buf) - n, "0-60  %.2fs", r.t_0_60);
+        if (r.t_0_100 >= 0)
+            n += snprintf(buf + n, sizeof(buf) - n, "\n0-100  %.2fs", r.t_0_100);
+        if (r.t_100_200 >= 0)
+            n += snprintf(buf + n, sizeof(buf) - n, "\n100-200  %.2fs", r.t_100_200);
+        if (r.t_402m >= 0)
+            n += snprintf(buf + n, sizeof(buf) - n, "\n402m  %.2fs @%.0f", r.t_402m, r.v_402m_kmh);
+        if (n > 0) {
+            lv_label_set_text(perf_label, buf);
+            lv_obj_remove_flag(perf_label, LV_OBJ_FLAG_HIDDEN);
+        }
+
+        // a run just finished with at least one milestone: save it
+        static bool prev_run_active = false;
+        if (prev_run_active && !r.run_active && r.t_0_60 >= 0) {
+            history_add(&r);
+        }
+        prev_run_active = r.run_active;
+    }
+    if (shown_tick && lv_tick_elaps(shown_tick) > 30000) {
+        shown_tick = 0;
+        lv_obj_add_flag(perf_label, LV_OBJ_FLAG_HIDDEN);
+    }
+#endif
+}
+
+// BOOT button: single click = battery overlay, double click = record
+// mode, hold = results history screen
+static void tick_button(void) {
+    static int btn_prev = 1;
+    static uint32_t btn_down_tick = 0;
+    static uint32_t pending_click_tick = 0;   // single click awaiting a second
+
+    int btn = gpio_get_level(BOOT_BUTTON_GPIO);
+    if (btn_prev == 1 && btn == 0) {
+        btn_down_tick = lv_tick_get();
+    } else if (btn_prev == 0 && btn == 1) {
+        uint32_t held = lv_tick_elaps(btn_down_tick);
+        if (held > 30 && held < 800) {
+#if SHOW_PERF
+            if (pending_click_tick && lv_tick_elaps(pending_click_tick) < 350) {
+                // double click: toggle record mode; the GPS switches with
+                // it (cruise multi-GNSS <-> high-rate GPS-only for timing)
+                pending_click_tick = 0;
+                record_mode = !record_mode;
+#if GPS_SOURCE == GPS_SOURCE_UART
+                gps_set_perf_mode(record_mode);
+#endif
+                if (record_mode) {
+                    lv_obj_remove_flag(rec_dot, LV_OBJ_FLAG_HIDDEN);
+                } else {
+                    lv_obj_add_flag(rec_dot, LV_OBJ_FLAG_HIDDEN);
+                    lv_obj_add_flag(perf_label, LV_OBJ_FLAG_HIDDEN);
+                }
+            } else {
+                pending_click_tick = lv_tick_get();
+            }
+#else
+            pending_click_tick = lv_tick_get();
+#endif
+        }
+#if SHOW_PERF
+        else if (held >= 800 && held < 5000) {
+            // long press: results history screen
+            pending_click_tick = 0;
+            history_toggle();
+        }
+#endif
+    }
+    btn_prev = btn;
+
+#if SHOW_BATTERY
+    // the click window expired without a second click: confirmed single
+    if (pending_click_tick && lv_tick_elaps(pending_click_tick) >= 350) {
+        pending_click_tick = 0;
+        batt_visible = !batt_visible;
+        if (batt_visible) {
+            lv_obj_remove_flag(batt_label, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(batt_label, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+#endif
+}
+
+void overlays_tick(void) {
+    tick_speed();
+    tick_battery();
+    tick_perf();
+    tick_button();
+}

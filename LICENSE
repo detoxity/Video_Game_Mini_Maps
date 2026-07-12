@@ -1,0 +1,38 @@
+Video Game Mini Map
+===================
+
+This project is a fork of Video_Game_Mini_Maps by Garage Tinkering
+(https://github.com/garagetinkering/Video_Game_Mini_Maps), which is
+distributed under the Creative Commons Attribution-NonCommercial license
+(CC BY-NC), declared in its README:
+
+  "Code is free to use and modify as you like, but not for commercial
+   CC BY-NC (Attribution-NonCommercial)"
+
+This fork and all modifications are therefore also licensed under
+CC BY-NC 4.0: https://creativecommons.org/licenses/by-nc/4.0/
+
+You are free to share and adapt this code with attribution, for
+non-commercial purposes only.
+
+Third-party components under their own licenses
+------------------------------------------------
+
+- boards/esp32_s3_touch_amoled_1_8 - Waveshare ESP32-S3-Touch-AMOLED-1.8
+  BSP (vendored + patched): Apache License 2.0 (see LICENSE in that
+  directory)
+- tools/map_generator - osm-game-tiles renderer
+  (github.com/detoxity/osm-game-tiles), git submodule: MIT License
+- tools/map_tiles - LVGL map tile converter by Eric Nam (0015),
+  git submodule: MIT License (see LICENSE in the submodule)
+- managed_components/ - Espressif and LVGL components fetched by the IDF
+  component manager, each under its own license (Apache-2.0 / MIT)
+
+Map data
+--------
+
+Map tiles are rendered from OpenStreetMap data, (c) OpenStreetMap
+contributors, available under the Open Database License (ODbL):
+https://www.openstreetmap.org/copyright
+Tile sets generated with tools/map_generator inherit the ODbL
+attribution requirement.

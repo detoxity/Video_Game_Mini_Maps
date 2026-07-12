@@ -4,8 +4,11 @@ extern "C" {
 
 #include "driver/twai.h"
 
-#define CAN_TX_GPIO     (gpio_num_t)21
-#define CAN_RX_GPIO     (gpio_num_t)22
+// ESP32-S3-Touch-LCD-1.85: GPIO43/44 (UART header on the back) are the only
+// free exposed pins - wire them to an external CAN transceiver (e.g. SN65HVD230).
+// The serial console is moved to USB-Serial-JTAG in sdkconfig.defaults.
+#define CAN_TX_GPIO     (gpio_num_t)43
+#define CAN_RX_GPIO     (gpio_num_t)44
 #define CANBUS_SPEED    500000   // 500kbps
 
 #define CAN_QUEUE_LENGTH 32

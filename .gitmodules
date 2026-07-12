@@ -1,0 +1,6 @@
+[submodule "tools/map_tiles"]
+	path = tools/map_tiles
+	url = https://github.com/0015/map_tiles
+[submodule "tools/map_generator"]
+	path = tools/map_generator
+	url = https://github.com/detoxity/osm-game-tiles

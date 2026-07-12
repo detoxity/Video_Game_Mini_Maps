@@ -1,0 +1,22 @@
+dependencies:
+  idf:
+    version: '>=5.3.0'
+
+  espressif/esp_lcd_st77916:
+    version: "^2"
+    public: true
+
+  espressif/esp_io_expander_tca9554:
+    version: "^2"
+
+  espressif/esp_lcd_touch_cst816s:
+    version: "^1"
+
+  espressif/esp_lvgl_port:
+    version: "2.6.3"   # last version compatible with lvgl 9.2.x
+    public: true
+
+description: Minimal BSP for Waveshare ESP32-S3-Touch-LCD-1.85 (ST77916 QSPI 360x360, TCA9554 IO expander, SD over SPI)
+targets:
+- esp32s3
+version: 0.0.1
