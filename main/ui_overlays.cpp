@@ -40,6 +40,33 @@ bool overlays_battery_visible(void) {
 #endif
 }
 
+#if SHOW_BATTERY
+// battery label and LVGL's FPS meter show/hide together (BOOT click)
+static void batt_apply_visibility(void) {
+    if (batt_visible) {
+        lv_obj_remove_flag(batt_label, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(batt_label, LV_OBJ_FLAG_HIDDEN);
+    }
+#if LV_USE_PERF_MONITOR
+    // LVGL auto-creates the FPS meter on the sys layer at display creation.
+    // Toggle that label's hidden flag directly: lv_sysmon_show_performance()
+    // would re-create it and leak a timer + observer per call.
+    static lv_obj_t *fps_label = NULL;
+    if (!fps_label) {
+        fps_label = lv_obj_get_child(lv_layer_sys(), 0);
+    }
+    if (fps_label) {
+        if (batt_visible) {
+            lv_obj_remove_flag(fps_label, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(fps_label, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+#endif
+}
+#endif
+
 // ---------------------------------------------------------------- history
 #if SHOW_PERF
 struct PerfRecord {
@@ -248,9 +275,7 @@ void overlays_create(lv_obj_t *parent) {
             nvs_close(h);
         }
     }
-    if (!batt_visible) {
-        lv_obj_add_flag(batt_label, LV_OBJ_FLAG_HIDDEN);
-    }
+    batt_apply_visibility();
 #endif
 
 #if SHOW_PERF
@@ -418,11 +443,7 @@ static void tick_button(void) {
     if (pending_click_tick && lv_tick_elaps(pending_click_tick) >= 350) {
         pending_click_tick = 0;
         batt_visible = !batt_visible;
-        if (batt_visible) {
-            lv_obj_remove_flag(batt_label, LV_OBJ_FLAG_HIDDEN);
-        } else {
-            lv_obj_add_flag(batt_label, LV_OBJ_FLAG_HIDDEN);
-        }
+        batt_apply_visibility();
     }
 #endif
 }
