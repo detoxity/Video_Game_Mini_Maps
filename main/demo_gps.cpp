@@ -10,6 +10,7 @@
 #include "app_state.h"
 #include "demo_gps.h"
 #include "PerfMeter.h"
+#include "TrackLog.h"
 
 // Reference numbers at 3.5 m/s^2: 0-60 4.68s, 0-100 7.86s,
 // 0-200 15.79s, 100-200 7.94s (each includes the 1 km/h start offset).
@@ -72,6 +73,7 @@ static void demo_gps_task(void *arg) {
         gps_speed_kmh = v * 0.0036f;
         receiving_data = true;
         perf_feed(itow, (int32_t)v);
+        tracklog_point(new_latitude, new_longitude, (int32_t)v, itow);
         data_ready = true;
 
         vTaskDelay(pdMS_TO_TICKS(DEMO_TICK_MS));

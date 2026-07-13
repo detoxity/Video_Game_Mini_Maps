@@ -348,6 +348,139 @@ void GPSLocator::pan_by(int dx, int dy) {
     lv_obj_set_pos(map_group, gx, gy);
 }
 
+// ---------------------------------------------------------------- track view
+// A finished run drawn as a polyline over the tiles: points are stored in
+// world pixels (tile coords * 256 at MAP_ZOOM), split into segments by
+// speed bucket, and re-projected into map_group content coordinates on
+// every grid shift so the line stays glued to the map.
+#define TRACK_DRAW_MAX_PTS 128   // hard cap on drawn nodes
+#define TRACK_MIN_NODE_PX  8     // min screen distance between nodes
+#define TRACK_MAX_SEGS     32
+
+static double *trk_wx = nullptr, *trk_wy = nullptr;   // world px
+static float  *trk_v  = nullptr;                      // km/h
+static int     trk_n  = 0;
+static lv_obj_t *trk_line[TRACK_MAX_SEGS];
+static lv_point_precise_t *trk_seg_pts[TRACK_MAX_SEGS];
+static int trk_seg_start[TRACK_MAX_SEGS];
+static int trk_seg_len[TRACK_MAX_SEGS];
+static int trk_segs = 0;
+
+static int track_bucket(float v_kmh) {
+    if (v_kmh < 60.0f)  return 0;
+    if (v_kmh < 100.0f) return 1;
+    if (v_kmh < 150.0f) return 2;
+    return 3;
+}
+
+static lv_color_t track_bucket_color(int b) {
+    switch (b) {
+    case 0:  return lv_color_make(93, 239, 39);    // green: < 60
+    case 1:  return lv_color_make(221, 221, 37);   // citrus: 60-100
+    case 2:  return lv_color_make(244, 153, 37);   // orange: 100-150
+    default: return lv_color_make(255, 42, 22);    // red: 150+
+    }
+}
+
+// re-project every segment into current grid content coordinates
+static void track_reposition(int top_left_x, int top_left_y) {
+    for (int s = 0; s < trk_segs; s++) {
+        lv_point_precise_t *p = trk_seg_pts[s];
+        int start = trk_seg_start[s];
+        for (int i = 0; i < trk_seg_len[s]; i++) {
+            p[i].x = (lv_value_precise_t)(trk_wx[start + i] - (double)top_left_x * MAP_TILES_TILE_SIZE);
+            p[i].y = (lv_value_precise_t)(trk_wy[start + i] - (double)top_left_y * MAP_TILES_TILE_SIZE);
+        }
+        lv_line_set_points(trk_line[s], p, trk_seg_len[s]);
+    }
+}
+
+void GPSLocator::track_clear() {
+    for (int s = 0; s < trk_segs; s++) {
+        lv_obj_delete(trk_line[s]);
+        free(trk_seg_pts[s]);
+    }
+    trk_segs = 0;
+    free(trk_wx); free(trk_wy); free(trk_v);
+    trk_wx = trk_wy = nullptr;
+    trk_v = nullptr;
+    trk_n = 0;
+}
+
+void GPSLocator::track_show(const track_view_pt_t *pts, int n) {
+    if (!initialized || !pts || n < 2) return;
+    track_clear();
+
+    // GPS points arrive every ~1px of screen distance at z16 - drawing a
+    // node per sample made LVGL do orders of magnitude more work than the
+    // eye can see (FPS dropped to ~8). Decimate by screen distance: keep
+    // a node only every TRACK_MIN_NODE_PX pixels, always keep the last.
+    const double min_d2 = (double)(TRACK_MIN_NODE_PX * TRACK_MIN_NODE_PX);
+
+    trk_wx = (double *)malloc(TRACK_DRAW_MAX_PTS * sizeof(double));
+    trk_wy = (double *)malloc(TRACK_DRAW_MAX_PTS * sizeof(double));
+    trk_v  = (float *)malloc(TRACK_DRAW_MAX_PTS * sizeof(float));
+    if (!trk_wx || !trk_wy || !trk_v) {
+        track_clear();
+        return;
+    }
+
+    int m = 0;
+    for (int i = 0; i < n && m < TRACK_DRAW_MAX_PTS; i++) {
+        double tx, ty;
+        get_tile_coordinates(pts[i].lat, pts[i].lon, tx, ty);
+        double wx = tx * MAP_TILES_TILE_SIZE;
+        double wy = ty * MAP_TILES_TILE_SIZE;
+        if (m > 0 && i < n - 1) {
+            double dx = wx - trk_wx[m - 1], dy = wy - trk_wy[m - 1];
+            if (dx * dx + dy * dy < min_d2) continue;   // too close to draw
+        }
+        trk_wx[m] = wx;
+        trk_wy[m] = wy;
+        trk_v[m] = pts[i].v_kmh;
+        m++;
+    }
+    if (m < 2) {
+        track_clear();
+        return;
+    }
+    trk_n = m;
+
+    // split into speed-bucket segments (consecutive segments share their
+    // boundary point so the polyline stays visually continuous)
+    int s = 0;
+    while (s < m - 1 && trk_segs < TRACK_MAX_SEGS) {
+        int bucket = track_bucket(trk_v[s]);
+        int e = s + 1;
+        if (trk_segs == TRACK_MAX_SEGS - 1) {
+            e = m - 1;   // segment budget exhausted: rest in one piece
+        } else {
+            while (e < m - 1 && track_bucket(trk_v[e]) == bucket) e++;
+        }
+        int len = e - s + 1;
+        lv_point_precise_t *p = (lv_point_precise_t *)malloc(len * sizeof(lv_point_precise_t));
+        if (!p) break;
+
+        lv_obj_t *line = lv_line_create(map_group);
+        lv_obj_set_pos(line, 0, 0);
+        lv_obj_set_style_line_width(line, 4, 0);
+        // rounded joints draw two arcs per node - measurably slow, and
+        // invisible at this width with 8px node spacing
+        lv_obj_set_style_line_rounded(line, false, 0);
+        lv_obj_set_style_line_color(line, track_bucket_color(bucket), 0);
+        lv_obj_set_style_line_opa(line, LV_OPA_90, 0);
+
+        trk_line[trk_segs] = line;
+        trk_seg_pts[trk_segs] = p;
+        trk_seg_start[trk_segs] = s;
+        trk_seg_len[trk_segs] = len;
+        trk_segs++;
+        s = e;
+    }
+
+    track_reposition(top_left_tile_x, top_left_tile_y);
+}
+
 void GPSLocator::center_map_on_gps() {
     MAP_LOG("GPSLocator: Centering on GPS coordinates\n");
 
@@ -416,6 +549,7 @@ void GPSLocator::show_initial_location(double latitude, double longitude) {
     // Load tile images and move map to center
     load_tile_images();
     center_map_on_gps();
+    track_reposition(top_left_tile_x, top_left_tile_y);
 }
 
 void GPSLocator::set_fallback_tile(int col) {
@@ -539,6 +673,9 @@ void GPSLocator::shift_grid(int sx, int sy) {
     // re-issues any loads dropped by the generation bump); cells that
     // already hold the right tile are shown instantly and skipped
     load_tile_images();
+
+    // the track polyline is in content coordinates - follow the grid
+    track_reposition(top_left_tile_x, top_left_tile_y);
 }
 
 void GPSLocator::move_location(double latitude, double longitude) {

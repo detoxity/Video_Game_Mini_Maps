@@ -1,6 +1,7 @@
 #pragma once
 
 #include "lvgl.h"
+#include "TrackLog.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -38,6 +39,11 @@ public:
     static void get_screen_offset(double latitude, double longitude, int *dx, int *dy);
 
     static bool fetch_images_from_sd(int index, int tile_x, int tile_y);
+
+    // Draw a recorded run as a polyline over the map (segments colored by
+    // speed); stays glued to the tiles across panning and grid shifts
+    static void track_show(const track_view_pt_t *pts, int n);
+    static void track_clear();
 
     // Cleanup
     static void cleanup();

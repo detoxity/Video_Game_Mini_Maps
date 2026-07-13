@@ -8,6 +8,9 @@
 #include "ui_overlays.h"
 #include "bsp/esp-bsp.h"
 #include "GPS_UART_Driver.h"
+#include "TrackLog.h"
+#include "gps_locator.h"
+#include "esp_heap_caps.h"
 
 #if SHOW_PERF
 #include "PerfMeter.h"
@@ -76,6 +79,8 @@ struct PerfRecord {
     uint8_t  mon, day, hour, min;
     // GPS stream time lost and bridged mid-run (0 = clean measurement)
     float gap_s;
+    // id of the CSV track on SD (/sdcard/tracks/run_NNNNN.csv), 0 = none
+    uint32_t track_id;
 };
 static PerfRecord history[HISTORY_MAX];
 static int history_count = 0;
@@ -104,7 +109,7 @@ static void history_load(void) {
             history_count = len / (5 * sizeof(float));
             for (int i = 0; i < history_count; i++) {
                 history[i] = PerfRecord{old[i][0], old[i][1], old[i][2],
-                                        old[i][3], old[i][4], 0, 0, 0, 0, 0, 0.0f};
+                                        old[i][3], old[i][4], 0, 0, 0, 0, 0, 0.0f, 0};
             }
         }
     }
@@ -136,6 +141,7 @@ static void stamp_local_time(PerfRecord *r) {
 }
 
 static void history_refresh_list(void);
+static void history_toggle(void);
 
 static void history_add(const perf_results_t *r) {
     if (history_count >= HISTORY_MAX) {
@@ -144,21 +150,26 @@ static void history_add(const perf_results_t *r) {
         history_count = HISTORY_MAX - 1;
     }
     PerfRecord rec = {r->t_0_60, r->t_0_100, r->t_100_200, r->t_402m, r->v_402m_kmh,
-                      0, 0, 0, 0, 0, r->gap_s};
+                      0, 0, 0, 0, 0, r->gap_s, 0};
     stamp_local_time(&rec);
+    rec.track_id = tracklog_save_csv();   // GPS trace of the run -> SD card
     history[history_count++] = rec;
     history_save();
 }
 
 static void history_delete(int index) {
     if (index < 0 || index >= history_count) return;
+    tracklog_delete_csv(history[index].track_id);
     memmove(&history[index], &history[index + 1], (history_count - 1 - index) * sizeof(PerfRecord));
     history_count--;
     history_save();
     history_refresh_list();
 }
 
-// swipe an entry to the left to delete it
+static void track_view_open(int index);
+
+// swipe an entry to the left to delete it; tap it to view the run's
+// track drawn over the map
 static void hist_item_event_cb(lv_event_t *e) {
     static int32_t swipe_x = 0;
     static bool consumed = false;
@@ -167,6 +178,12 @@ static void hist_item_event_cb(lv_event_t *e) {
     if (code == LV_EVENT_PRESSED) {
         swipe_x = 0;
         consumed = false;
+        return;
+    }
+    if (code == LV_EVENT_CLICKED) {
+        if (!consumed && swipe_x > -20 && swipe_x < 20) {
+            track_view_open((int)(intptr_t)lv_event_get_user_data(e));
+        }
         return;
     }
     if (code != LV_EVENT_PRESSING || consumed) return;
@@ -214,6 +231,7 @@ static void history_refresh_list(void) {
         lv_obj_remove_flag(item, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_event_cb(item, hist_item_event_cb, LV_EVENT_PRESSED, (void *)(intptr_t)i);
         lv_obj_add_event_cb(item, hist_item_event_cb, LV_EVENT_PRESSING, (void *)(intptr_t)i);
+        lv_obj_add_event_cb(item, hist_item_event_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
 
         char t60[16], t100[16], t12[16], t402[24];
         fmt_time(t60, sizeof(t60), r->t60);
@@ -296,8 +314,63 @@ static void history_build_screen(lv_obj_t *parent) {
     lv_obj_add_flag(hist_panel, LV_OBJ_FLAG_HIDDEN);
 }
 
+// leave the on-map track review: remove the polyline and the result box
+static void track_view_exit(void) {
+    if (!track_view_active) return;
+    track_view_active = false;
+    GPSLocator::track_clear();
+    lv_obj_add_flag(perf_label, LV_OBJ_FLAG_HIDDEN);
+    // normal browse rules resume; the 15s timer will snap back to the car
+    last_touch_tick = lv_tick_get();
+}
+
+// tap on a history entry: jump the map to the run and draw its track,
+// with the run's numbers shown in the live-style overlay box
+static void track_view_open(int index) {
+    if (index < 0 || index >= history_count) return;
+    PerfRecord *r = &history[index];
+    if (r->track_id == 0) return;
+
+    track_view_pt_t *pts = (track_view_pt_t *)heap_caps_malloc(
+        2304 * sizeof(track_view_pt_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!pts) return;
+    int n = tracklog_load_csv(r->track_id, pts, 2304);
+    if (n < 2) {
+        free(pts);
+        return;
+    }
+
+    history_toggle();               // close the list
+    track_view_exit();              // clear a previously shown track
+    track_view_active = true;
+    follow_vehicle = false;
+
+    // jump the map to the launch point and draw the run
+    GPSLocator::show_initial_location((double)pts[0].lat, (double)pts[0].lon);
+    GPSLocator::track_show(pts, n);
+    free(pts);
+
+    // live-mode style overlay with the stored numbers
+    char buf[128];
+    int len = 0;
+    if (r->year) {
+        len += snprintf(buf + len, sizeof(buf) - len, "%02d.%02d  %02d:%02d",
+                        r->day, r->mon, r->hour, r->min);
+    } else {
+        len += snprintf(buf + len, sizeof(buf) - len, "#%d", index + 1);
+    }
+    if (r->t60 >= 0)      len += snprintf(buf + len, sizeof(buf) - len, "\n0-60  %.2fs", r->t60);
+    if (r->t100 >= 0)     len += snprintf(buf + len, sizeof(buf) - len, "\n0-100  %.2fs", r->t100);
+    if (r->t100_200 >= 0) len += snprintf(buf + len, sizeof(buf) - len, "\n100-200  %.2fs", r->t100_200);
+    if (r->t402 >= 0)     len += snprintf(buf + len, sizeof(buf) - len, "\n402m  %.2fs @%.0f", r->t402, r->v402);
+    if (r->gap_s > 0.05f) len += snprintf(buf + len, sizeof(buf) - len, "\n! gps gap %.1fs", r->gap_s);
+    lv_label_set_text(perf_label, buf);
+    lv_obj_remove_flag(perf_label, LV_OBJ_FLAG_HIDDEN);
+}
+
 static void history_toggle(void) {
     if (lv_obj_has_flag(hist_panel, LV_OBJ_FLAG_HIDDEN)) {
+        track_view_exit();          // opening the list closes the track view
         history_refresh_list();
         lv_obj_remove_flag(hist_panel, LV_OBJ_FLAG_HIDDEN);
     } else {
@@ -418,6 +491,33 @@ static void tick_battery(void) {
 #endif
 }
 
+// live track: while a run is recording, redraw the growing polyline
+// behind the vehicle a couple of times per second; the final shape stays
+// on the map after the run until record mode is switched off
+static void tick_live_track(void) {
+#if SHOW_PERF
+    if (!record_mode || track_view_active) return;
+    static uint32_t t = 0;
+    if (lv_tick_elaps(t) < 500) return;
+    t = lv_tick_get();
+
+    static track_view_pt_t *live = NULL;
+    static int last_drawn = 0;
+    int n = tracklog_count();
+    if (n < 2 || n == last_drawn) return;
+    if (!live) {
+        live = (track_view_pt_t *)heap_caps_malloc(
+            2304 * sizeof(track_view_pt_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!live) return;
+    }
+    n = tracklog_get_live(live, 2304);
+    if (n >= 2) {
+        GPSLocator::track_show(live, n);
+    }
+    last_drawn = n;
+#endif
+}
+
 static void tick_perf(void) {
 #if SHOW_PERF
     // show timing results while a run is active and for 30s after
@@ -482,6 +582,7 @@ static void tick_button(void) {
                 // double click: toggle record mode; the GPS switches with
                 // it (cruise multi-GNSS <-> high-rate GPS-only for timing)
                 pending_click_tick = 0;
+                track_view_exit();   // arming a run clears any track review
                 record_mode = !record_mode;
 #if GPS_SOURCE == GPS_SOURCE_UART
                 gps_set_perf_mode(record_mode);
@@ -491,6 +592,7 @@ static void tick_button(void) {
                 } else {
                     lv_obj_add_flag(rec_dot, LV_OBJ_FLAG_HIDDEN);
                     lv_obj_add_flag(perf_label, LV_OBJ_FLAG_HIDDEN);
+                    GPSLocator::track_clear();   // drop the live-drawn track
                 }
             } else {
                 pending_click_tick = lv_tick_get();
@@ -523,5 +625,6 @@ void overlays_tick(void) {
     tick_speed();
     tick_battery();
     tick_perf();
+    tick_live_track();
     tick_button();
 }

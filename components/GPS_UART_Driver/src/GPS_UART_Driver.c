@@ -9,6 +9,7 @@
 
 #include "GPS_UART_Driver.h"
 #include "PerfMeter.h"
+#include "TrackLog.h"
 
 static const char *TAG = "gps_uart";
 
@@ -460,6 +461,15 @@ static void ubx_handle_frame(void) {
     new_longitude = (float)(lon_e7 * 1e-7);
     receiving_data = true;
     data_ready = true;
+
+    // track recorder: only stores while a perf run is active
+    if (ubx.len >= 64) {
+        uint32_t itow;
+        int32_t gspeed_mms;
+        memcpy(&itow, &ubx.payload[0], 4);
+        memcpy(&gspeed_mms, &ubx.payload[60], 4);
+        tracklog_point(new_latitude, new_longitude, gspeed_mms, itow);
+    }
 }
 
 static void ubx_parse_byte(uint8_t b) {

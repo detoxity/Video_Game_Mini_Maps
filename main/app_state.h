@@ -36,6 +36,10 @@ extern bool location_initialized;
 extern bool follow_vehicle;
 extern uint32_t last_touch_tick;
 
+// a saved run's track is being reviewed on the map (suspends the
+// return-to-vehicle timeout; see ui_overlays track_view_*)
+extern bool track_view_active;
+
 // palettes
 extern const lv_color_t PALETTE_BLACK;
 extern const lv_color_t PALETTE_BLUE;

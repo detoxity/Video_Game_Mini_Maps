@@ -37,6 +37,7 @@
 #include "ui_overlays.h"
 #include "persistence.h"
 #include "demo_gps.h"
+#include "TrackLog.h"
 
 #include "CANBus_Driver.h"
 #include "GPS_UART_Driver.h"
@@ -82,6 +83,7 @@ bool location_initialized     = false; // has the initial GPS location been set
 
 bool follow_vehicle           = true;  // false while the user browses the map
 uint32_t last_touch_tick      = 0;
+bool track_view_active        = false; // reviewing a saved run's track
 
 void (*can_message_handler)(twai_message_t *message) = NULL;
 
@@ -394,7 +396,8 @@ static void lvgl_timer(lv_timer_t * timer) {
         update_values();
     }
 
-    if (!follow_vehicle && lv_tick_elaps(last_touch_tick) > PAN_RETURN_TIMEOUT_MS) {
+    if (!follow_vehicle && !track_view_active &&
+        lv_tick_elaps(last_touch_tick) > PAN_RETURN_TIMEOUT_MS) {
         return_to_vehicle();
     }
 
@@ -450,6 +453,9 @@ extern "C" void app_main(void) {
 #if USE_IMU
     imu_start(BSP_I2C_NUM);
 #endif
+
+    // track recorder buffer (fed by the GPS/demo task during perf runs)
+    tracklog_init();
 
     // position input
 #if GPS_SOURCE == GPS_SOURCE_DEMO
