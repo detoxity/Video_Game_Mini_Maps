@@ -72,7 +72,9 @@ static void demo_gps_task(void *arg) {
                                 (111320.0 * cos(DEMO_LAT0 * M_PI / 180.0)));
         gps_speed_kmh = v * 0.0036f;
         receiving_data = true;
-        perf_feed(itow, (int32_t)v);
+        // simulate a gentle 2% downhill so the slope readout can be
+        // verified on the desk (expect about -2.0% on results)
+        perf_feed(itow, (int32_t)v, (int32_t)(v * 0.02f));
         tracklog_point(new_latitude, new_longitude, (int32_t)v, itow);
         data_ready = true;
 

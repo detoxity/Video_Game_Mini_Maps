@@ -19,12 +19,15 @@ typedef struct {
     float v_402m_kmh;  // trap speed at 402m
     float gap_s;       // GPS stream time lost mid-run and bridged (0 = clean;
                        // distance over gaps is estimated by trapezoid)
+    float slope_pct;   // course slope over the measured distance (Doppler
+                       // velD integrated): negative = downhill (favorable)
     bool run_active;   // a launch is currently being timed
 } perf_results_t;
 
 // feed one velocity sample; itow_ms = GPS time of week (NAV-PVT iTOW),
-// gspeed_mms = Doppler ground speed in mm/s. Call from any task.
-void perf_feed(uint32_t itow_ms, int32_t gspeed_mms);
+// gspeed_mms = Doppler ground speed, veld_mms = Doppler down velocity
+// (NED, positive = descending), both mm/s. Call from any task.
+void perf_feed(uint32_t itow_ms, int32_t gspeed_mms, int32_t veld_mms);
 
 // feed one accelerometer sample (m/s^2) with a millisecond timestamp;
 // used to pin the launch instant between GNSS samples (GNSS+IMU fusion)

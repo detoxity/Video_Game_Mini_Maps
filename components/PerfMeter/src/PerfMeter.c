@@ -33,6 +33,9 @@ static float rate_hz = 0.0f;
 
 static uint32_t t_launch = 0;      // iTOW at launch
 static float dist_mm = 0.0f;
+static float dh_mm = 0.0f;         // height change since launch (velD integrated,
+                                   // negative = descending)
+static int32_t vd_prev = 0;        // previous Doppler down velocity, mm/s
 
 // ---- GNSS+IMU fusion: launch-instant refinement -------------------------
 // The accelerometer sees the car move within ~10ms; GNSS only ~2-3 samples
@@ -88,7 +91,7 @@ void perf_imu_feed(float ax, float ay, float az, uint32_t tick_ms) {
     }
 }
 
-static perf_results_t results = {-1, -1, -1, -1, -1, -1, 0, false};
+static perf_results_t results = {-1, -1, -1, -1, -1, -1, 0, 0, false};
 static volatile uint32_t seq = 0;
 
 float perf_current_accel(void) { return accel_ms2; }
@@ -112,16 +115,20 @@ static float cross_time_ms(uint32_t t_now, uint32_t dt, int32_t v_now, int32_t t
 }
 
 static void finish_run(const char *why) {
-    ESP_LOGI(TAG, "run ended (%s): 0-60 %.2fs  0-100 %.2fs  100-200 %.2fs  402m %.2fs @ %.0f km/h  (stream gaps %.1fs)",
+    // runs that never reached 402m still get a slope over what was driven
+    if (results.t_402m < 0 && dist_mm > 50000.0f) {
+        results.slope_pct = dh_mm / dist_mm * 100.0f;
+    }
+    ESP_LOGI(TAG, "run ended (%s): 0-60 %.2fs  0-100 %.2fs  100-200 %.2fs  402m %.2fs @ %.0f km/h  (slope %+.1f%%, gaps %.1fs)",
              why, results.t_0_60, results.t_0_100, results.t_100_200, results.t_402m, results.v_402m_kmh,
-             results.gap_s);
+             results.slope_pct, results.gap_s);
     results.run_active = false;
     state = ST_IDLE;
     still_samples = 0;
     seq++;
 }
 
-void perf_feed(uint32_t itow_ms, int32_t gspeed_mms) {
+void perf_feed(uint32_t itow_ms, int32_t gspeed_mms, int32_t veld_mms) {
     // low-pass: 3-sample moving average
     ma_buf[ma_idx] = gspeed_mms;
     ma_idx = (ma_idx + 1) % 3;
@@ -141,6 +148,7 @@ void perf_feed(uint32_t itow_ms, int32_t gspeed_mms) {
             uint32_t gap = itow_ms - t_prev;
             if (gap <= 5000) {
                 dist_mm += (float)(gspeed_mms + v_prev) * 0.5f * (float)gap / 1000.0f;
+                dh_mm -= (float)(veld_mms + vd_prev) * 0.5f * (float)gap / 1000.0f;
                 results.gap_s += (float)gap / 1000.0f;
                 seq++;
                 ESP_LOGW(TAG, "stream gap %lums mid-run - distance bridged",
@@ -150,6 +158,7 @@ void perf_feed(uint32_t itow_ms, int32_t gspeed_mms) {
             }
         }
         v_prev = v;
+        vd_prev = veld_mms;
         t_prev = itow_ms;
         return;
     }
@@ -200,9 +209,11 @@ void perf_feed(uint32_t itow_ms, int32_t gspeed_mms) {
             }
 
             dist_mm = 0.0f;
+            dh_mm = 0.0f;
             results.t_0_60 = results.t_0_100 = results.t_0_200 = -1.0f;
             results.t_100_200 = results.t_402m = results.v_402m_kmh = -1.0f;
             results.gap_s = 0.0f;
+            results.slope_pct = 0.0f;
             results.run_active = true;
             seq++;
             ESP_LOGI(TAG, "launch!");
@@ -214,6 +225,9 @@ void perf_feed(uint32_t itow_ms, int32_t gspeed_mms) {
         float d_step = (float)(v + v_prev) * 0.5f * (float)dt / 1000.0f;
         float dist_before = dist_mm;
         dist_mm += d_step;
+        // height change from Doppler down-velocity (much cleaner than GNSS
+        // altitude); negative = descending
+        dh_mm -= (float)(veld_mms + vd_prev) * 0.5f * (float)dt / 1000.0f;
 
         if (results.t_0_60 < 0 && v >= V_60_KMH) {
             results.t_0_60 = cross_time_ms(itow_ms, dt, v, V_60_KMH) / 1000.0f;
@@ -239,6 +253,8 @@ void perf_feed(uint32_t itow_ms, int32_t gspeed_mms) {
             // trap speed at the interpolated crossing instant, not at the
             // (up to one sample later) detection sample
             results.v_402m_kmh = ((float)v_prev + f * (float)(v - v_prev)) * 0.0036f;
+            // Dragy-style course slope over the quarter mile
+            results.slope_pct = dh_mm / DIST_QUARTER * 100.0f;
             seq++;
             ESP_LOGI(TAG, "402m: %.2f s @ %.0f km/h", results.t_402m, results.v_402m_kmh);
         }
@@ -255,5 +271,6 @@ void perf_feed(uint32_t itow_ms, int32_t gspeed_mms) {
     }
 
     v_prev = v;
+    vd_prev = veld_mms;
     t_prev = itow_ms;
 }

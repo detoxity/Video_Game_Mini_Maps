@@ -426,8 +426,8 @@ static void ubx_handle_frame(void) {
         memcpy(&vel_e, &ubx.payload[52], 4);
         memcpy(&vel_d, &ubx.payload[56], 4);
         memcpy(&gspeed_mms, &ubx.payload[60], 4);
-        (void)vel_n; (void)vel_e; (void)vel_d;   // parsed for future use (slope etc.)
-        perf_feed(itow, gspeed_mms);
+        (void)vel_n; (void)vel_e;
+        perf_feed(itow, gspeed_mms, vel_d);   // velD drives the slope figure
     }
 
     // cold-start fixes can scatter wildly before settling - only pass

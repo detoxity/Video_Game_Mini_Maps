@@ -81,6 +81,8 @@ struct PerfRecord {
     float gap_s;
     // id of the CSV track on SD (/sdcard/tracks/run_NNNNN.csv), 0 = none
     uint32_t track_id;
+    // course slope over the run, negative = downhill (Dragy-style)
+    float slope_pct;
 };
 static PerfRecord history[HISTORY_MAX];
 static int history_count = 0;
@@ -109,7 +111,7 @@ static void history_load(void) {
             history_count = len / (5 * sizeof(float));
             for (int i = 0; i < history_count; i++) {
                 history[i] = PerfRecord{old[i][0], old[i][1], old[i][2],
-                                        old[i][3], old[i][4], 0, 0, 0, 0, 0, 0.0f, 0};
+                                        old[i][3], old[i][4], 0, 0, 0, 0, 0, 0.0f, 0, 0.0f};
             }
         }
     }
@@ -150,7 +152,7 @@ static void history_add(const perf_results_t *r) {
         history_count = HISTORY_MAX - 1;
     }
     PerfRecord rec = {r->t_0_60, r->t_0_100, r->t_100_200, r->t_402m, r->v_402m_kmh,
-                      0, 0, 0, 0, 0, r->gap_s, 0};
+                      0, 0, 0, 0, 0, r->gap_s, 0, r->slope_pct};
     stamp_local_time(&rec);
     rec.track_id = tracklog_save_csv();   // GPS trace of the run -> SD card
     history[history_count++] = rec;
@@ -233,12 +235,16 @@ static void history_refresh_list(void) {
         lv_obj_add_event_cb(item, hist_item_event_cb, LV_EVENT_PRESSING, (void *)(intptr_t)i);
         lv_obj_add_event_cb(item, hist_item_event_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
 
-        char t60[16], t100[16], t12[16], t402[24];
+        char t60[16], t100[16], t12[16], t402[32];
         fmt_time(t60, sizeof(t60), r->t60);
         fmt_time(t100, sizeof(t100), r->t100);
         fmt_time(t12, sizeof(t12), r->t100_200);
         if (r->t402 >= 0) snprintf(t402, sizeof(t402), "%.2f @%.0f", r->t402, r->v402);
         else              snprintf(t402, sizeof(t402), "-");
+        if (r->slope_pct != 0.0f) {
+            size_t l = strlen(t402);
+            snprintf(t402 + l, sizeof(t402) - l, "  %+.1f%%", r->slope_pct);
+        }
 
         // header: run number + date/time (from the GPS clock); a bridged
         // GPS stream gap marks the run as less trustworthy - highlight it
@@ -363,6 +369,8 @@ static void track_view_open(int index) {
     if (r->t100 >= 0)     len += snprintf(buf + len, sizeof(buf) - len, "\n0-100  %.2fs", r->t100);
     if (r->t100_200 >= 0) len += snprintf(buf + len, sizeof(buf) - len, "\n100-200  %.2fs", r->t100_200);
     if (r->t402 >= 0)     len += snprintf(buf + len, sizeof(buf) - len, "\n402m  %.2fs @%.0f", r->t402, r->v402);
+    if (r->slope_pct != 0.0f)
+        len += snprintf(buf + len, sizeof(buf) - len, "\nslope %+.1f%%", r->slope_pct);
     if (r->gap_s > 0.05f) len += snprintf(buf + len, sizeof(buf) - len, "\n! gps gap %.1fs", r->gap_s);
     lv_label_set_text(perf_label, buf);
     lv_obj_remove_flag(perf_label, LV_OBJ_FLAG_HIDDEN);
@@ -530,7 +538,7 @@ static void tick_perf(void) {
 
         perf_results_t r;
         perf_get_results(&r);
-        char buf[96];
+        char buf[128];
         int n = 0;
         if (r.run_active && r.t_0_60 < 0) {
             n = snprintf(buf, sizeof(buf), "RUN!");
@@ -543,6 +551,8 @@ static void tick_perf(void) {
             n += snprintf(buf + n, sizeof(buf) - n, "\n100-200  %.2fs", r.t_100_200);
         if (r.t_402m >= 0)
             n += snprintf(buf + n, sizeof(buf) - n, "\n402m  %.2fs @%.0f", r.t_402m, r.v_402m_kmh);
+        if (r.slope_pct != 0.0f)
+            n += snprintf(buf + n, sizeof(buf) - n, "\nslope %+.1f%%", r.slope_pct);
         if (r.gap_s > 0.05f)
             n += snprintf(buf + n, sizeof(buf) - n, "\n! gps gap %.1fs", r.gap_s);
         if (n > 0) {
