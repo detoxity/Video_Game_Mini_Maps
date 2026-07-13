@@ -21,7 +21,7 @@
 // QMC5883L compass (e.g. on FlyfishRC GPS combos) via the I2C header:
 // rotates the car icon by real heading while standing still. Falls back
 // to GPS-track heading automatically when absent.
-#define USE_COMPASS 1
+#define USE_COMPASS 0
 
 // on-board QMI8658 accelerometer refines the perf-meter launch instant
 // (GNSS+IMU fusion) - set 0 to rely on GNSS interpolation alone
@@ -61,6 +61,11 @@
 // (best TTFF/accuracy), record = GPS-only at max rate (18-25Hz timing).
 #define SHOW_PERF 1
 #define HISTORY_MAX 30
+
+// runs are timestamped from GPS UTC time (UBX NAV-PVT carries date/time
+// on both M8 and M10); local time = UTC + this offset in hours.
+// Kyiv: +2 winter / +3 summer (no DST logic - set for the season)
+#define UTC_OFFSET_HOURS 3
 
 // ---- buttons ----------------------------------------------------------------
 #define BOOT_BUTTON_GPIO GPIO_NUM_0

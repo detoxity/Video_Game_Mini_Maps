@@ -17,6 +17,8 @@ typedef struct {
     float t_100_200;   // rolling 100->200 within the run
     float t_402m;      // 1/4 mile time
     float v_402m_kmh;  // trap speed at 402m
+    float gap_s;       // GPS stream time lost mid-run and bridged (0 = clean;
+                       // distance over gaps is estimated by trapezoid)
     bool run_active;   // a launch is currently being timed
 } perf_results_t;
 

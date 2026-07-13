@@ -71,6 +71,11 @@ static void batt_apply_visibility(void) {
 #if SHOW_PERF
 struct PerfRecord {
     float t60, t100, t100_200, t402, v402;
+    // local date/time of the run from GPS UTC (0 = unknown, e.g. demo mode)
+    uint16_t year;
+    uint8_t  mon, day, hour, min;
+    // GPS stream time lost and bridged mid-run (0 = clean measurement)
+    float gap_s;
 };
 static PerfRecord history[HISTORY_MAX];
 static int history_count = 0;
@@ -78,7 +83,7 @@ static int history_count = 0;
 static void history_save(void) {
     nvs_handle_t h;
     if (nvs_open("minimap", NVS_READWRITE, &h) == ESP_OK) {
-        nvs_set_blob(h, "runs", history, history_count * sizeof(PerfRecord));
+        nvs_set_blob(h, "runs2", history, history_count * sizeof(PerfRecord));
         nvs_commit(h);
         nvs_close(h);
     }
@@ -86,13 +91,48 @@ static void history_save(void) {
 
 static void history_load(void) {
     nvs_handle_t h;
-    if (nvs_open("minimap", NVS_READONLY, &h) == ESP_OK) {
-        size_t len = sizeof(history);
-        if (nvs_get_blob(h, "runs", history, &len) == ESP_OK) {
-            history_count = len / sizeof(PerfRecord);
+    if (nvs_open("minimap", NVS_READONLY, &h) != ESP_OK) return;
+    size_t len = sizeof(history);
+    if (nvs_get_blob(h, "runs2", history, &len) == ESP_OK &&
+        len % sizeof(PerfRecord) == 0) {
+        history_count = len / sizeof(PerfRecord);
+    } else {
+        // migrate pre-timestamp records ("runs": 5 floats each)
+        float old[HISTORY_MAX][5];
+        len = sizeof(old);
+        if (nvs_get_blob(h, "runs", old, &len) == ESP_OK) {
+            history_count = len / (5 * sizeof(float));
+            for (int i = 0; i < history_count; i++) {
+                history[i] = PerfRecord{old[i][0], old[i][1], old[i][2],
+                                        old[i][3], old[i][4], 0, 0, 0, 0, 0, 0.0f};
+            }
         }
-        nvs_close(h);
     }
+    nvs_close(h);
+}
+
+// stamp a record with local time derived from the GPS UTC clock
+static void stamp_local_time(PerfRecord *r) {
+    r->year = 0; r->mon = 0; r->day = 0; r->hour = 0; r->min = 0;
+#if GPS_SOURCE == GPS_SOURCE_UART
+    if (!gps_time_valid) return;
+    int y = gps_utc_year, mo = gps_utc_month, d = gps_utc_day;
+    int h = gps_utc_hour + UTC_OFFSET_HOURS, mi = gps_utc_min;
+    static const uint8_t dim[12] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    if (mo < 1 || mo > 12) return;
+    if (h >= 24) {
+        h -= 24;
+        int days = dim[mo - 1] + ((mo == 2 && y % 4 == 0) ? 1 : 0);
+        if (++d > days) { d = 1; if (++mo > 12) { mo = 1; y++; } }
+    } else if (h < 0) {
+        h += 24;
+        if (--d < 1) {
+            if (--mo < 1) { mo = 12; y--; }
+            d = dim[mo - 1] + ((mo == 2 && y % 4 == 0) ? 1 : 0);
+        }
+    }
+    r->year = y; r->mon = mo; r->day = d; r->hour = h; r->min = mi;
+#endif
 }
 
 static void history_refresh_list(void);
@@ -103,7 +143,10 @@ static void history_add(const perf_results_t *r) {
         memmove(&history[0], &history[1], (HISTORY_MAX - 1) * sizeof(PerfRecord));
         history_count = HISTORY_MAX - 1;
     }
-    history[history_count++] = PerfRecord{r->t_0_60, r->t_0_100, r->t_100_200, r->t_402m, r->v_402m_kmh};
+    PerfRecord rec = {r->t_0_60, r->t_0_100, r->t_100_200, r->t_402m, r->v_402m_kmh,
+                      0, 0, 0, 0, 0, r->gap_s};
+    stamp_local_time(&rec);
+    history[history_count++] = rec;
     history_save();
 }
 
@@ -166,6 +209,8 @@ static void history_refresh_list(void) {
         lv_obj_set_style_border_width(item, 0, 0);
         lv_obj_set_style_radius(item, 6, 0);
         lv_obj_set_style_pad_all(item, 8, 0);
+        lv_obj_set_style_pad_row(item, 3, 0);
+        lv_obj_set_flex_flow(item, LV_FLEX_FLOW_COLUMN);
         lv_obj_remove_flag(item, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_event_cb(item, hist_item_event_cb, LV_EVENT_PRESSED, (void *)(intptr_t)i);
         lv_obj_add_event_cb(item, hist_item_event_cb, LV_EVENT_PRESSING, (void *)(intptr_t)i);
@@ -174,14 +219,38 @@ static void history_refresh_list(void) {
         fmt_time(t60, sizeof(t60), r->t60);
         fmt_time(t100, sizeof(t100), r->t100);
         fmt_time(t12, sizeof(t12), r->t100_200);
-        if (r->t402 >= 0) snprintf(t402, sizeof(t402), "%.2fs @%.0f", r->t402, r->v402);
+        if (r->t402 >= 0) snprintf(t402, sizeof(t402), "%.2f @%.0f", r->t402, r->v402);
         else              snprintf(t402, sizeof(t402), "-");
 
+        // header: run number + date/time (from the GPS clock); a bridged
+        // GPS stream gap marks the run as less trustworthy - highlight it
+        lv_obj_t *hdr = lv_label_create(item);
+        lv_obj_set_style_text_font(hdr, &lv_font_montserrat_14, 0);
+        bool gap = r->gap_s > 0.05f;
+        lv_obj_set_style_text_color(hdr, gap ? PALETTE_NFS_ORANGE : PALETTE_GREY, 0);
+        char when[40];
+        if (r->year) {
+            snprintf(when, sizeof(when), "%02d.%02d.%04d  %02d:%02d",
+                     r->day, r->mon, r->year, r->hour, r->min);
+        } else {
+            when[0] = '\0';
+        }
+        if (gap) {
+            lv_label_set_text_fmt(hdr, "#%d   %s   !gap %.1fs", i + 1, when, r->gap_s);
+        } else {
+            lv_label_set_text_fmt(hdr, "#%d   %s", i + 1, when);
+        }
+
         lv_obj_t *lbl = lv_label_create(item);
-        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_16, 0);
+#ifdef BSP_BOARD_WS_S3_TOUCH_LCD_1_85
+        // round screen: narrower list, one size down to keep lines unwrapped
+        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_18, 0);
+#else
+        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_20, 0);
+#endif
         lv_obj_set_style_text_color(lbl, PALETTE_WHITE, 0);
-        lv_label_set_text_fmt(lbl, "#%d  60: %s  100: %s\n100-200: %s  402m: %s",
-                              i + 1, t60, t100, t12, t402);
+        lv_label_set_text_fmt(lbl, "60: %s  100: %s\n100-200: %s\n402m: %s",
+                              t60, t100, t12, t402);
     }
 }
 
@@ -280,7 +349,7 @@ void overlays_create(lv_obj_t *parent) {
 
 #if SHOW_PERF
     perf_label = lv_label_create(parent);
-    lv_obj_set_style_text_font(perf_label, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(perf_label, &lv_font_montserrat_22, 0);
     lv_obj_set_style_text_color(perf_label, PALETTE_NFS_CITRUS, 0);
     lv_obj_set_style_text_align(perf_label, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_bg_color(perf_label, PALETTE_BLACK, 0);
@@ -374,6 +443,8 @@ static void tick_perf(void) {
             n += snprintf(buf + n, sizeof(buf) - n, "\n100-200  %.2fs", r.t_100_200);
         if (r.t_402m >= 0)
             n += snprintf(buf + n, sizeof(buf) - n, "\n402m  %.2fs @%.0f", r.t_402m, r.v_402m_kmh);
+        if (r.gap_s > 0.05f)
+            n += snprintf(buf + n, sizeof(buf) - n, "\n! gps gap %.1fs", r.gap_s);
         if (n > 0) {
             lv_label_set_text(perf_label, buf);
             lv_obj_remove_flag(perf_label, LV_OBJ_FLAG_HIDDEN);

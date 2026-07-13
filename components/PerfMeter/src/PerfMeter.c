@@ -88,7 +88,7 @@ void perf_imu_feed(float ax, float ay, float az, uint32_t tick_ms) {
     }
 }
 
-static perf_results_t results = {-1, -1, -1, -1, -1, -1, false};
+static perf_results_t results = {-1, -1, -1, -1, -1, -1, 0, false};
 static volatile uint32_t seq = 0;
 
 float perf_current_accel(void) { return accel_ms2; }
@@ -112,8 +112,9 @@ static float cross_time_ms(uint32_t t_now, uint32_t dt, int32_t v_now, int32_t t
 }
 
 static void finish_run(const char *why) {
-    ESP_LOGI(TAG, "run ended (%s): 0-60 %.2fs  0-100 %.2fs  100-200 %.2fs  402m %.2fs @ %.0f km/h",
-             why, results.t_0_60, results.t_0_100, results.t_100_200, results.t_402m, results.v_402m_kmh);
+    ESP_LOGI(TAG, "run ended (%s): 0-60 %.2fs  0-100 %.2fs  100-200 %.2fs  402m %.2fs @ %.0f km/h  (stream gaps %.1fs)",
+             why, results.t_0_60, results.t_0_100, results.t_100_200, results.t_402m, results.v_402m_kmh,
+             results.gap_s);
     results.run_active = false;
     state = ST_IDLE;
     still_samples = 0;
@@ -131,7 +132,23 @@ void perf_feed(uint32_t itow_ms, int32_t gspeed_mms) {
     int32_t v = (ma_buf[0] + ma_buf[1] + ma_buf[2]) / 3;
 
     if (v_prev < 0 || itow_ms <= t_prev || itow_ms - t_prev > 1000) {
-        // first sample, week rollover or gap: resync
+        // first sample, week rollover or gap: resync.
+        // Mid-run a stream gap must NOT silently drop the metres travelled -
+        // that made every 402m result long by however far the car went while
+        // the stream was down (speed crossings are immune, distance is not).
+        // Bridge plausible gaps with the raw-speed trapezoid and flag it.
+        if (state == ST_RUN && itow_ms > t_prev) {
+            uint32_t gap = itow_ms - t_prev;
+            if (gap <= 5000) {
+                dist_mm += (float)(gspeed_mms + v_prev) * 0.5f * (float)gap / 1000.0f;
+                results.gap_s += (float)gap / 1000.0f;
+                seq++;
+                ESP_LOGW(TAG, "stream gap %lums mid-run - distance bridged",
+                         (unsigned long)gap);
+            } else {
+                finish_run("stream lost");
+            }
+        }
         v_prev = v;
         t_prev = itow_ms;
         return;
@@ -185,6 +202,7 @@ void perf_feed(uint32_t itow_ms, int32_t gspeed_mms) {
             dist_mm = 0.0f;
             results.t_0_60 = results.t_0_100 = results.t_0_200 = -1.0f;
             results.t_100_200 = results.t_402m = results.v_402m_kmh = -1.0f;
+            results.gap_s = 0.0f;
             results.run_active = true;
             seq++;
             ESP_LOGI(TAG, "launch!");
@@ -218,7 +236,9 @@ void perf_feed(uint32_t itow_ms, int32_t gspeed_mms) {
         if (results.t_402m < 0 && dist_mm >= DIST_QUARTER) {
             float f = (d_step > 0.0f) ? (DIST_QUARTER - dist_before) / d_step : 1.0f;
             results.t_402m = ((float)(itow_ms - dt - t_launch) + f * (float)dt) / 1000.0f;
-            results.v_402m_kmh = (float)v * 0.0036f;
+            // trap speed at the interpolated crossing instant, not at the
+            // (up to one sample later) detection sample
+            results.v_402m_kmh = ((float)v_prev + f * (float)(v - v_prev)) * 0.0036f;
             seq++;
             ESP_LOGI(TAG, "402m: %.2f s @ %.0f km/h", results.t_402m, results.v_402m_kmh);
         }

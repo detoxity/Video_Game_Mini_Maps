@@ -12,7 +12,10 @@
 
 static const char *TAG = "gps_uart";
 
-#define RX_BUF_SIZE   2048
+// at 18-25Hz UBX the old 2KB buffer held ~1s of stream - any longer stall
+// overflowed it and the resulting gap silently shortened the integrated
+// 402m distance. 8KB rides out multi-second hiccups.
+#define RX_BUF_SIZE   8192
 #define LINE_MAX      128
 
 static const int baud_candidates[] = {38400, 9600, 115200, 57600, 19200};
@@ -20,6 +23,12 @@ static const int baud_candidates[] = {38400, 9600, 115200, 57600, 19200};
 // ACK(1)/NAK(0)/no answer(-1) for config commands we care about
 static volatile int8_t ack_cfg_rate = -1;
 static volatile int8_t ack_cfg_gnss = -1;
+
+// UTC date/time from NAV-PVT (exported; see header)
+volatile unsigned short gps_utc_year = 0;
+volatile unsigned char  gps_utc_month = 0, gps_utc_day = 0;
+volatile unsigned char  gps_utc_hour = 0, gps_utc_min = 0, gps_utc_sec = 0;
+volatile bool           gps_time_valid = false;
 
 typedef enum {
     PROBE_SILENT,   // nothing received at all
@@ -377,6 +386,19 @@ static void ubx_handle_frame(void) {
     uint8_t flags = ubx.payload[21];
     uint8_t num_sv = ubx.payload[23];
     gps_sat_count = num_sv;
+
+    // UTC date/time: year u2 @4, month @6, day @7, h/m/s @8-10; valid
+    // flags @11 (bit0 date, bit1 time). Time usually locks before the
+    // position fix, so grab it here rather than after the fix gates.
+    if ((ubx.payload[11] & 0x03) == 0x03) {
+        gps_utc_year  = (unsigned short)(ubx.payload[4] | (ubx.payload[5] << 8));
+        gps_utc_month = ubx.payload[6];
+        gps_utc_day   = ubx.payload[7];
+        gps_utc_hour  = ubx.payload[8];
+        gps_utc_min   = ubx.payload[9];
+        gps_utc_sec   = ubx.payload[10];
+        gps_time_valid = true;
+    }
 
     // progress log every ~5s until the first valid fix
     static bool fix_logged = false;

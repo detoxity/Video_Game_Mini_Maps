@@ -31,6 +31,13 @@ extern int gps_sat_count;
 extern volatile bool data_ready;
 extern bool receiving_data;
 
+// UTC date/time from NAV-PVT (owned by the driver; usually valid before
+// the position fix). Same payload layout on M8 and M10.
+extern volatile unsigned short gps_utc_year;    // e.g. 2026; 0 = no time yet
+extern volatile unsigned char  gps_utc_month, gps_utc_day;
+extern volatile unsigned char  gps_utc_hour, gps_utc_min, gps_utc_sec;
+extern volatile bool           gps_time_valid;
+
 // install the UART driver and start the NMEA reader task
 void gps_uart_start(void);
 
