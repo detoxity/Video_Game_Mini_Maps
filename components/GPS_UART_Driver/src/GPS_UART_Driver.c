@@ -558,7 +558,7 @@ static void gps_task(void *arg) {
             config_done = true;
 #if GPS_AUTO_CONFIG
             ubx_config_link();
-            xTaskCreate(gps_cfg_task, "gps_cfg", 3072, NULL, 5, NULL);
+            xTaskCreatePinnedToCore(gps_cfg_task, "gps_cfg", 3072, NULL, 5, NULL, 1);
 #else
             // make sure NMEA output is on for modules a FC switched to UBX-only
             ubx_enable_nmea_output();
@@ -612,5 +612,8 @@ void gps_uart_start(void) {
     ESP_ERROR_CHECK(uart_set_pin(GPS_UART_NUM, GPS_UART_TX_GPIO, GPS_UART_RX_GPIO,
                                  UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
 
-    xTaskCreate(gps_task, "gps_uart", 4096, NULL, 6, NULL);
+    // core 1 = measurement world (GPS + IMU), away from LVGL/SD on core 0:
+    // the perf math is iTOW-timestamped so UI load can't skew it, but a
+    // dedicated core removes even scheduling jitter from the sample stream
+    xTaskCreatePinnedToCore(gps_task, "gps_uart", 4096, NULL, 6, NULL, 1);
 }

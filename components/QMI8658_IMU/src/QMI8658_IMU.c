@@ -108,6 +108,8 @@ bool imu_start(int i2c_port) {
     }
 
     ESP_LOGI(TAG, "QMI8658 at 0x%02X, accel 8g @ 250Hz", found);
-    xTaskCreate(imu_task, "imu", 3072, NULL, 5, NULL);
+    // measurement core (see gps_uart_start): launch-detection samples
+    // shouldn't share a core with rendering bursts
+    xTaskCreatePinnedToCore(imu_task, "imu", 3072, NULL, 5, NULL, 1);
     return true;
 }

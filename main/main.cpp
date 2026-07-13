@@ -433,6 +433,10 @@ extern "C" void app_main(void) {
         }
     };
 #endif
+    // core layout: 0 = UI world (LVGL render, tile streaming), 1 =
+    // measurement world (GPS + IMU tasks) - rendering bursts can never
+    // add jitter to the perf-meter sample stream
+    cfg.lvgl_port_cfg.task_affinity = 0;
     bsp_display_start_with_config(&cfg);
     // panel RAM is cleared to black inside the BSP, so lighting up now is safe
     bsp_display_backlight_on();

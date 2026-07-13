@@ -110,7 +110,9 @@ bool GPSLocator::init(lv_obj_t* parent_screen, int width, int height) {
             MAP_LOG("Failed to allocate tile loader resources\n");
             return false;
         }
-        xTaskCreate(tile_loader_task, "tile_loader", 4096, NULL, 5, NULL);
+        // UI core: tile streaming belongs with LVGL, not with the
+        // GPS/IMU measurement tasks on core 1
+        xTaskCreatePinnedToCore(tile_loader_task, "tile_loader", 4096, NULL, 5, NULL, 0);
     }
 
     // Create map container. Panning is handled manually from the touch

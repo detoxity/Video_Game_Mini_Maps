@@ -706,6 +706,9 @@ lv_display_t *bsp_display_start(void)
             .buff_dma = false,
             .buff_spiram = true,
         }};
+    // UI core: keep rendering off core 1, which is reserved for the
+    // GPS/IMU measurement tasks
+    cfg.lvgl_port_cfg.task_affinity = 0;
     return bsp_display_start_with_config(&cfg);
 }
 

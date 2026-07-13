@@ -79,7 +79,8 @@ static void demo_gps_task(void *arg) {
 }
 
 void demo_gps_start(void) {
-    xTaskCreate(demo_gps_task, "demo_gps", 4096, NULL, 5, NULL);
+    // same core as the real GPS task (measurement world, core 1)
+    xTaskCreatePinnedToCore(demo_gps_task, "demo_gps", 4096, NULL, 5, NULL, 1);
 }
 
 #endif // GPS_SOURCE_DEMO
