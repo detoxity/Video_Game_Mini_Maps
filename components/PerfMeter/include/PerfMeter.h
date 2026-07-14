@@ -25,13 +25,20 @@ typedef struct {
 } perf_results_t;
 
 // feed one velocity sample; itow_ms = GPS time of week (NAV-PVT iTOW),
-// gspeed_mms = Doppler ground speed, veld_mms = Doppler down velocity
-// (NED, positive = descending), both mm/s. Call from any task.
-void perf_feed(uint32_t itow_ms, int32_t gspeed_mms, int32_t veld_mms);
+// tick_ms = system tick timestamp in milliseconds when the sample was
+// captured, gspeed_mms = Doppler ground speed, veld_mms = Doppler down
+// velocity (NED, positive = descending), both mm/s. Call from any task.
+void perf_feed(uint32_t itow_ms, uint32_t tick_ms, int32_t gspeed_mms, int32_t veld_mms);
 
 // feed one accelerometer sample (m/s^2) with a millisecond timestamp;
 // used to pin the launch instant between GNSS samples (GNSS+IMU fusion)
 void perf_imu_feed(float ax, float ay, float az, uint32_t tick_ms);
+
+// apply a fixed timing offset (milliseconds) to all perf results.
+void perf_set_calibration_offset(int32_t offset_ms);
+
+// read the current calibration offset in milliseconds.
+int32_t perf_get_calibration_offset(void);
 
 // filtered acceleration in m/s^2 (positive = accelerating)
 float perf_current_accel(void);

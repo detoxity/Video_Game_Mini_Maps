@@ -4,8 +4,10 @@
 #include <stdbool.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"
 #include "driver/uart.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 
 #include "GPS_UART_Driver.h"
 #include "PerfMeter.h"
@@ -20,6 +22,14 @@ static const char *TAG = "gps_uart";
 #define LINE_MAX      128
 
 static const int baud_candidates[] = {38400, 9600, 115200, 57600, 19200};
+
+// UART driver event queue (RX ISR posts UART_DATA here) and the arrival
+// timestamp of the burst currently being parsed. Capturing the timestamp
+// when the event is dequeued - right after the RX ISR serviced the FIFO -
+// ties it to on-wire frame arrival instead of to whenever the parser thread
+// happened to run. See gps_task steady-state loop.
+static QueueHandle_t uart_evt_queue = NULL;
+static volatile int64_t frame_rx_us = 0;
 
 // ACK(1)/NAK(0)/no answer(-1) for config commands we care about
 static volatile int8_t ack_cfg_rate = -1;
@@ -421,13 +431,15 @@ static void ubx_handle_frame(void) {
     if (ubx.len >= 92) {
         uint32_t itow;
         int32_t vel_n, vel_e, vel_d, gspeed_mms;
+        // timestamp of this frame's arrival, captured at the UART event
+        uint32_t tick_ms = (uint32_t)(frame_rx_us / 1000);
         memcpy(&itow, &ubx.payload[0], 4);
         memcpy(&vel_n, &ubx.payload[48], 4);
         memcpy(&vel_e, &ubx.payload[52], 4);
         memcpy(&vel_d, &ubx.payload[56], 4);
         memcpy(&gspeed_mms, &ubx.payload[60], 4);
         (void)vel_n; (void)vel_e;
-        perf_feed(itow, gspeed_mms, vel_d);   // velD drives the slope figure
+        perf_feed(itow, tick_ms, gspeed_mms, vel_d);   // velD drives the slope figure
     }
 
     // cold-start fixes can scatter wildly before settling - only pass
@@ -466,9 +478,11 @@ static void ubx_handle_frame(void) {
     if (ubx.len >= 64) {
         uint32_t itow;
         int32_t gspeed_mms;
+        uint32_t tick_ms = (uint32_t)(frame_rx_us / 1000);
         memcpy(&itow, &ubx.payload[0], 4);
         memcpy(&gspeed_mms, &ubx.payload[60], 4);
-        tracklog_point(new_latitude, new_longitude, gspeed_mms, itow);
+        tracklog_point(new_latitude, new_longitude, gspeed_mms, itow,
+                       tick_ms);
     }
 }
 
@@ -577,30 +591,62 @@ static void gps_task(void *arg) {
 
         char line[LINE_MAX];
         size_t len = 0;
-        uint8_t chunk[128];
+        uint8_t chunk[256];
         last_ok_tick = xTaskGetTickCount();
 
-        // read until the stream goes quiet (e.g. a baud change the module
-        // didn't follow), then fall back to a fresh scan
+        // Steady state is event-driven: the RX ISR posts UART_DATA when it
+        // services the FIFO. A short rx-timeout makes that fire ~4 symbols
+        // after a frame's last byte (the line goes idle between the 18-25Hz
+        // frames), so one event ~= one NAV-PVT frame and the timestamp we
+        // grab on dequeue tracks on-wire arrival. Drop back to a baud scan
+        // if the stream goes quiet.
+        uart_set_rx_timeout(GPS_UART_NUM, 4);
+        uart_flush_input(GPS_UART_NUM);
+        xQueueReset(uart_evt_queue);
+
+        uart_event_t ev;
         while (xTaskGetTickCount() - last_ok_tick < pdMS_TO_TICKS(8000)) {
-            int r = uart_read_bytes(GPS_UART_NUM, chunk, sizeof(chunk), pdMS_TO_TICKS(200));
-            for (int i = 0; i < r; i++) {
-                char c = (char)chunk[i];
+            if (xQueueReceive(uart_evt_queue, &ev, pdMS_TO_TICKS(200)) != pdTRUE) {
+                continue;   // idle tick: re-check the quiet timeout
+            }
+            if (ev.type == UART_FIFO_OVF || ev.type == UART_BUFFER_FULL) {
+                uart_flush_input(GPS_UART_NUM);
+                xQueueReset(uart_evt_queue);
+                continue;
+            }
+            if (ev.type != UART_DATA) {
+                continue;
+            }
 
-                // both parsers run on the stream: NMEA ignores binary,
-                // the UBX state machine ignores text
-                ubx_parse_byte((uint8_t)c);
+            // arrival timestamp of this burst - used by ubx_handle_frame for
+            // the frame it completes (frame_rx_us is refreshed per event, so
+            // a frame split across events is stamped by its final one)
+            frame_rx_us = esp_timer_get_time();
 
-                if (c == '\n' || c == '\r') {
-                    if (len > 6) {
-                        line[len] = '\0';
-                        handle_line(line);
+            int remaining = ev.size;
+            while (remaining > 0) {
+                int want = remaining < (int)sizeof(chunk) ? remaining : (int)sizeof(chunk);
+                int r = uart_read_bytes(GPS_UART_NUM, chunk, want, 0);
+                if (r <= 0) break;
+                remaining -= r;
+                for (int i = 0; i < r; i++) {
+                    char c = (char)chunk[i];
+
+                    // both parsers run on the stream: NMEA ignores binary,
+                    // the UBX state machine ignores text
+                    ubx_parse_byte((uint8_t)c);
+
+                    if (c == '\n' || c == '\r') {
+                        if (len > 6) {
+                            line[len] = '\0';
+                            handle_line(line);
+                        }
+                        len = 0;
+                    } else if (len < LINE_MAX - 1) {
+                        line[len++] = c;
+                    } else {
+                        len = 0;   // oversized garbage, resync
                     }
-                    len = 0;
-                } else if (len < LINE_MAX - 1) {
-                    line[len++] = c;
-                } else {
-                    len = 0;   // oversized garbage, resync
                 }
             }
         }
@@ -617,13 +663,15 @@ void gps_uart_start(void) {
         .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
         .source_clk = UART_SCLK_DEFAULT,
     };
-    ESP_ERROR_CHECK(uart_driver_install(GPS_UART_NUM, RX_BUF_SIZE, 0, 0, NULL, 0));
+    // install with an event queue so the RX ISR wakes the reader task the
+    // instant a frame lands (see the steady-state loop in gps_task)
+    ESP_ERROR_CHECK(uart_driver_install(GPS_UART_NUM, RX_BUF_SIZE, 0, 24, &uart_evt_queue, 0));
     ESP_ERROR_CHECK(uart_param_config(GPS_UART_NUM, &cfg));
     ESP_ERROR_CHECK(uart_set_pin(GPS_UART_NUM, GPS_UART_TX_GPIO, GPS_UART_RX_GPIO,
                                  UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
 
-    // core 1 = measurement world (GPS + IMU), away from LVGL/SD on core 0:
-    // the perf math is iTOW-timestamped so UI load can't skew it, but a
-    // dedicated core removes even scheduling jitter from the sample stream
-    xTaskCreatePinnedToCore(gps_task, "gps_uart", 4096, NULL, 6, NULL, 1);
+    // core 1 = measurement world (GPS + IMU), away from LVGL/SD on core 0.
+    // gps_uart runs at the top priority there so the frame-arrival timestamp
+    // is never delayed by the IMU sampler (prio 6) or config task (prio 5).
+    xTaskCreatePinnedToCore(gps_task, "gps_uart", 4096, NULL, 7, NULL, 1);
 }

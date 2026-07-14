@@ -3,6 +3,7 @@
 #include "freertos/task.h"
 #include "driver/i2c_master.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 
 #include "QMI8658_IMU.h"
 #include "PerfMeter.h"
@@ -45,13 +46,20 @@ bool imu_get_accel(float *ax, float *ay, float *az) {
 
 static void imu_task(void *arg) {
     running = true;
+    // fixed 200Hz cadence: vTaskDelayUntil holds the period regardless of
+    // how long the read/processing takes, so launch-detection sampling
+    // stays regular. Processing is deliberately short - one 6-byte I2C read
+    // then a feed - and the arrival timestamp is captured right at the read.
+    TickType_t next = xTaskGetTickCount();
+    const TickType_t period = pdMS_TO_TICKS(5);
     for (;;) {
-        vTaskDelay(pdMS_TO_TICKS(5));   // ~200Hz polling of a 250Hz stream
+        vTaskDelayUntil(&next, period);
 
         uint8_t d[6];
         if (reg_read(REG_AX_L, d, 6) != ESP_OK) {
             continue;
         }
+        uint32_t tick_ms = (uint32_t)(esp_timer_get_time() / 1000);
         int16_t rx = (int16_t)(d[0] | (d[1] << 8));
         int16_t ry = (int16_t)(d[2] | (d[3] << 8));
         int16_t rz = (int16_t)(d[4] | (d[5] << 8));
@@ -60,8 +68,7 @@ static void imu_task(void *arg) {
         last_a[1] = ry * MPS2_PER_LSB;
         last_a[2] = rz * MPS2_PER_LSB;
 
-        perf_imu_feed(last_a[0], last_a[1], last_a[2],
-                      (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS));
+        perf_imu_feed(last_a[0], last_a[1], last_a[2], tick_ms);
     }
 }
 
@@ -108,8 +115,9 @@ bool imu_start(int i2c_port) {
     }
 
     ESP_LOGI(TAG, "QMI8658 at 0x%02X, accel 8g @ 250Hz", found);
-    // measurement core (see gps_uart_start): launch-detection samples
-    // shouldn't share a core with rendering bursts
-    xTaskCreatePinnedToCore(imu_task, "imu", 3072, NULL, 5, NULL, 1);
+    // measurement core (see gps_uart_start): high priority (6, just under
+    // the GPS reader) for deterministic launch-detection sampling, off the
+    // core that runs rendering and tile streaming
+    xTaskCreatePinnedToCore(imu_task, "imu", 3072, NULL, 6, NULL, 1);
     return true;
 }

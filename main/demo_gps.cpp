@@ -6,6 +6,7 @@
 #include <cmath>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "esp_timer.h"
 
 #include "app_state.h"
 #include "demo_gps.h"
@@ -74,9 +75,11 @@ static void demo_gps_task(void *arg) {
         receiving_data = true;
         // simulate a gentle 2% downhill so the slope readout can be
         // verified on the desk (expect about -2.0% on results)
-        perf_feed(itow, (int32_t)v, (int32_t)(v * 0.02f));
-        tracklog_point(new_latitude, new_longitude, (int32_t)v, itow);
-        data_ready = true;
+        uint32_t tick_ms = (uint32_t)(esp_timer_get_time() / 1000);
+        perf_feed(itow, tick_ms, (int32_t)v, (int32_t)(v * 0.02f));
+        tracklog_point(new_latitude, new_longitude, (int32_t)v, itow,
+                       tick_ms);
+        data_ready = true;   // triggers update_values() -> moves the map
 
         vTaskDelay(pdMS_TO_TICKS(DEMO_TICK_MS));
     }

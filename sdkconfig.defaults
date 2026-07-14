@@ -10,6 +10,10 @@ CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_OCT=y
 CONFIG_SPIRAM_SPEED_80M=y
+# 64-byte L1 data-cache line: tiles live in octal PSRAM and are blitted
+# sequentially during rendering, so a wider line halves the PSRAM burst
+# overhead on those reads (default is 32B)
+CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y
 # Console on USB-C (native USB-Serial-JTAG) - frees GPIO43/44 for the CAN transceiver
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 # All ESP_LOGx compiled out for performance (console writes can stall the

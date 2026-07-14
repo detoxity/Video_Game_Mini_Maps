@@ -18,6 +18,7 @@ typedef struct {
     float lat, lon;
     int32_t v_mms;
     uint32_t itow;
+    uint32_t tick_ms;
 } track_pt_t;
 
 static track_pt_t *buf = NULL;
@@ -32,7 +33,8 @@ void tracklog_init(void) {
     }
 }
 
-void tracklog_point(float lat, float lon, int32_t v_mms, uint32_t itow_ms) {
+void tracklog_point(float lat, float lon, int32_t v_mms, uint32_t itow_ms,
+                    uint32_t tick_ms) {
     if (!buf) return;
 
     perf_results_t r;
@@ -46,7 +48,7 @@ void tracklog_point(float lat, float lon, int32_t v_mms, uint32_t itow_ms) {
         count = 0;            // new run: restart capture
     }
     if (count < TRACK_MAX_PTS) {
-        buf[count] = (track_pt_t){lat, lon, v_mms, itow_ms};
+        buf[count] = (track_pt_t){lat, lon, v_mms, itow_ms, tick_ms};
         count++;
     }
 }
@@ -96,11 +98,12 @@ uint32_t tracklog_save_csv(void) {
         ESP_LOGW(TAG, "can't create %s", path);
         return 0;
     }
-    fprintf(f, "itow_ms,lat,lon,speed_kmh\n");
+    fprintf(f, "itow_ms,tick_ms,lat,lon,speed_kmh\n");
     int n = count;
     for (int i = 0; i < n; i++) {
-        fprintf(f, "%lu,%.7f,%.7f,%.2f\n",
+        fprintf(f, "%lu,%lu,%.7f,%.7f,%.2f\n",
                 (unsigned long)buf[i].itow,
+                (unsigned long)buf[i].tick_ms,
                 (double)buf[i].lat, (double)buf[i].lon,
                 (double)buf[i].v_mms * 0.0036);
     }
@@ -130,9 +133,15 @@ int tracklog_load_csv(uint32_t id, track_view_pt_t *out, int max_pts) {
     int n = 0;
     fgets(line, sizeof(line), f);   // header
     while (n < max_pts && fgets(line, sizeof(line), f)) {
-        unsigned long itow;
+        unsigned long itow, tick_ms;
         float lat, lon, v;
-        if (sscanf(line, "%lu,%f,%f,%f", &itow, &lat, &lon, &v) == 4) {
+        int fields = sscanf(line, "%lu,%lu,%f,%f,%f", &itow, &tick_ms, &lat, &lon, &v);
+        if (fields == 5) {
+            out[n].lat = lat;
+            out[n].lon = lon;
+            out[n].v_kmh = v;
+            n++;
+        } else if (fields == 4) {
             out[n].lat = lat;
             out[n].lon = lon;
             out[n].v_kmh = v;

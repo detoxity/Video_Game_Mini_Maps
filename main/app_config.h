@@ -60,6 +60,9 @@
 // Record mode also switches the GPS module: cruise = multi-GNSS 10Hz
 // (best TTFF/accuracy), record = GPS-only at max rate (18-25Hz timing).
 #define SHOW_PERF 1
+// calibration offset in milliseconds applied to all perf-meter times.
+// Set this to match a reference Dragy or other trusted timing source.
+#define PERF_CALIBRATION_OFFSET_MS 0
 #define HISTORY_MAX 30
 
 // runs are timestamped from GPS UTC time (UBX NAV-PVT carries date/time

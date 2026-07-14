@@ -38,6 +38,7 @@
 #include "persistence.h"
 #include "demo_gps.h"
 #include "TrackLog.h"
+#include "PerfMeter.h"
 
 #include "CANBus_Driver.h"
 #include "GPS_UART_Driver.h"
@@ -453,6 +454,10 @@ extern "C" void app_main(void) {
 #if USE_IMU
     imu_start(BSP_I2C_NUM);
 #endif
+
+    // perf-meter timing calibration (compile-time default; keeps PerfMeter
+    // free of any app dependency)
+    perf_set_calibration_offset(PERF_CALIBRATION_OFFSET_MS);
 
     // track recorder buffer (fed by the GPS/demo task during perf runs)
     tracklog_init();

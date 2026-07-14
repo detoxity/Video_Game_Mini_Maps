@@ -20,7 +20,8 @@ void tracklog_init(void);
 
 // feed every positioned GPS sample (called from the GPS/demo task on the
 // measurement core); points are recorded while a perf run is active
-void tracklog_point(float lat, float lon, int32_t v_mms, uint32_t itow_ms);
+void tracklog_point(float lat, float lon, int32_t v_mms, uint32_t itow_ms,
+                    uint32_t tick_ms);
 
 // points captured for the most recently finished run
 int tracklog_count(void);
