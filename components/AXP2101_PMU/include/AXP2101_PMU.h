@@ -1,6 +1,9 @@
-// Minimal AXP2101 PMU driver (ESP32-S3-Touch-AMOLED-1.8 and similar):
-// USB (VBUS) presence monitoring, soft power-off, battery gauge.
-// Sits on the board's shared I2C bus at address 0x34.
+// Board power backend, one API for two very different designs:
+//  - AMOLED 1.8: AXP2101 PMU over I2C (0x34) - VBUS sense, soft power-off,
+//    battery gauge.
+//  - LCD 1.85: no PMU. Discrete GPIO power latch (GPIO7 held high keeps the
+//    board on), power button on GPIO6, battery voltage on the GPIO1 ADC.
+// The backend is selected at compile time from BOARD_LCD_1_85 / BOARD_AMOLED_1_8.
 #pragma once
 
 #include <stdbool.h>
@@ -10,8 +13,13 @@
 extern "C" {
 #endif
 
-// probe the PMU on an already-initialized I2C bus and start the VBUS
-// monitor task; returns false if no AXP2101 is present (e.g. LCD 1.85)
+// Latch the board power on as early as possible (LCD 1.85: drive the
+// power-hold GPIO high so releasing the button doesn't cut power). No-op
+// where the PMU latches in hardware (AMOLED). Call first thing in app_main.
+void pmu_power_hold_early(void);
+
+// bring up the power backend (probe the PMU / set up the ADC + button) and
+// start the monitor task; returns false if the expected hardware is absent
 bool pmu_start(int i2c_port);
 
 // called from the monitor task when USB power is removed (debounced);

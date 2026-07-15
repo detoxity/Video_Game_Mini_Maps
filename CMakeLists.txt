@@ -19,10 +19,13 @@ set(EXTRA_COMPONENT_DIRS
 
 if("$ENV{BOARD}" STREQUAL "lcd_1_85")
     list(APPEND EXTRA_COMPONENT_DIRS ./boards/bsp_ws_s3_touch_lcd_1_85)
+    # board macro visible to every component (e.g. the power backend)
+    add_compile_definitions(BOARD_LCD_1_85=1)
 elseif("$ENV{BOARD}" STREQUAL "amoled_1_8")
     # vendored copy of waveshare/esp32_s3_touch_amoled_1_8 v2.0.3
     # (patched: touch probe retries, no abort when touch is missing)
     list(APPEND EXTRA_COMPONENT_DIRS ./boards/esp32_s3_touch_amoled_1_8)
+    add_compile_definitions(BOARD_AMOLED_1_8=1)
 endif()
 
 add_compile_options(-Wno-format)

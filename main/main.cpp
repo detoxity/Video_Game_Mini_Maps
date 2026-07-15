@@ -50,6 +50,9 @@
 #if USE_IMU
 #include "QMI8658_IMU.h"
 #endif
+#if USE_PMU
+#include "AXP2101_PMU.h"
+#endif
 
 #include "images/car_icon.h"
 #include "images/north_pointer.h"
@@ -411,6 +414,12 @@ static void lvgl_timer(lv_timer_t * timer) {
 
 // ---------------------------------------------------------------- app_main
 extern "C" void app_main(void) {
+    // grab the power latch first thing (LCD 1.85: hold GPIO7 high so the
+    // board stays on once the power button is released). No-op on AMOLED.
+#if USE_PMU
+    pmu_power_hold_early();
+#endif
+
     persistence_init();   // NVS + last known position into current/new lat/lon
     mount_sd();
 

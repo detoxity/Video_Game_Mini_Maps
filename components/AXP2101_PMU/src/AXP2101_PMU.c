@@ -1,9 +1,184 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "driver/i2c_master.h"
 #include "esp_log.h"
 
 #include "AXP2101_PMU.h"
+
+#if defined(BOARD_LCD_1_85)
+// =============================================================================
+// LCD 1.85: no PMU. Power is a discrete soft-latch - GPIO7 held high keeps the
+// board powered (the button only supplies power while pressed, so firmware
+// must grab the latch at boot). Battery voltage is read on the GPIO1 ADC
+// through a 200k/100k divider; the power button is on GPIO6 (high = pressed).
+// =============================================================================
+#include "driver/gpio.h"
+#include "esp_adc/adc_oneshot.h"
+#include "esp_adc/adc_cali.h"
+#include "esp_adc/adc_cali_scheme.h"
+
+static const char *TAG = "pwr185";
+
+#define PWR_CONTROL_GPIO   GPIO_NUM_7      // BAT_Control: HIGH latches power on
+#define PWR_KEY_GPIO       GPIO_NUM_6      // Key_BAT: LOW = pressed (3V3 pull-up)
+// Battery voltage on GPIO8 = ADC1_CH7 (NOT GPIO1 - that's the touch I2C SDA
+// on this touch variant; the wiki's "GPIO1" is for the non-touch board).
+// Divider is 200k/100k, so battery = pin voltage x 3.
+#define BAT_ADC_ENABLED    1
+#define BAT_ADC_CHANNEL    ADC_CHANNEL_7   // GPIO8
+#define BAT_DIVIDER        3               // 200k + 100k
+
+static void (*unplug_cb)(void) = NULL;
+static void (*powerkey_cb)(void) = NULL;
+static volatile int batt_mv = -1;
+static adc_oneshot_unit_handle_t adc_handle = NULL;
+static adc_cali_handle_t adc_cali = NULL;
+
+void pmu_power_hold_early(void) {
+    gpio_config_t io = {
+        .pin_bit_mask = 1ULL << PWR_CONTROL_GPIO,
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&io);
+    gpio_set_level(PWR_CONTROL_GPIO, 1);   // hold power on
+}
+
+bool pmu_vbus_present(void) {
+    return false;   // no VBUS sense on this board - treat as battery
+}
+
+int pmu_battery_percent(void) {
+    return -1;      // voltage only, no fuel gauge
+}
+
+int pmu_battery_voltage_mv(void) {
+    return batt_mv;
+}
+
+void pmu_power_off(void) {
+    ESP_LOGW(TAG, "powering off (release latch)");
+    gpio_set_level(PWR_CONTROL_GPIO, 0);   // drop the latch -> rails fall
+    vTaskDelay(pdMS_TO_TICKS(1000));       // (only cuts on battery, not USB)
+}
+
+void pmu_set_unplug_callback(void (*cb)(void)) { unplug_cb = cb; }
+void pmu_set_powerkey_callback(void (*cb)(void)) { powerkey_cb = cb; }
+
+static void refresh_battery_voltage(void) {
+    if (!adc_handle) return;
+    int sum = 0, n = 0;
+    for (int i = 0; i < 8; i++) {
+        int raw = 0;
+        if (adc_oneshot_read(adc_handle, BAT_ADC_CHANNEL, &raw) == ESP_OK) {
+            sum += raw; n++;
+        }
+    }
+    if (n == 0) return;
+    int raw = sum / n;
+
+    int pin_mv;
+    if (adc_cali) {
+        // calibrated raw->mV (handles the real ADC width/attenuation), then
+        // undo the 200k/100k divider to get the battery voltage
+        if (adc_cali_raw_to_voltage(adc_cali, raw, &pin_mv) != ESP_OK) return;
+    } else {
+        pin_mv = (int)((float)raw * 3.3f / 4096.0f * 1000.0f);   // rough fallback
+    }
+    int mv = pin_mv * BAT_DIVIDER;
+    batt_mv = (mv > 1000) ? mv : -1;   // <1V = no battery attached
+
+    // diagnostic (visible only if logs are enabled): raw near 4095 = the ADC
+    // is saturating, which means the wrong pin or attenuation, not a scale bug
+    static int dbg = 0;
+    if (++dbg >= 30) {   // ~3s at 100ms
+        dbg = 0;
+        ESP_LOGI(TAG, "batt: raw=%d pin=%dmV batt=%dmV", raw, pin_mv, batt_mv);
+    }
+}
+
+static void pmu_task(void *arg) {
+    // Key_BAT reads HIGH when released, LOW when pressed. The press that
+    // powers the board on holds it LOW through boot - wait for release
+    // (HIGH) before acting, so booting isn't read as a power-off. After
+    // that, a short click of the button saves state and powers off.
+    bool armed = (gpio_get_level(PWR_KEY_GPIO) == 1);
+    int low_count = 0;
+
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(100));
+        refresh_battery_voltage();
+
+        int key = gpio_get_level(PWR_KEY_GPIO);   // 0 = pressed
+        if (!armed) {
+            if (key == 1) armed = true;   // button released after boot
+            continue;
+        }
+        // short click -> power off (debounced over ~200ms)
+        if (key == 0) {
+            if (++low_count >= 2) {
+                low_count = 0;
+                ESP_LOGI(TAG, "power key click");
+                if (powerkey_cb) powerkey_cb();
+            }
+        } else {
+            low_count = 0;
+        }
+    }
+}
+
+bool pmu_start(int i2c_port) {
+    (void)i2c_port;
+    (void)unplug_cb;   // no USB-unplug detection without a VBUS sense pin
+
+#if BAT_ADC_ENABLED
+    adc_oneshot_unit_init_cfg_t init_cfg = { .unit_id = ADC_UNIT_1 };
+    if (adc_oneshot_new_unit(&init_cfg, &adc_handle) != ESP_OK) {
+        adc_handle = NULL;
+        ESP_LOGW(TAG, "battery ADC init failed");
+    } else {
+        adc_oneshot_chan_cfg_t chan_cfg = {
+            .atten = ADC_ATTEN_DB_12,
+            .bitwidth = ADC_BITWIDTH_12,
+        };
+        adc_oneshot_config_channel(adc_handle, BAT_ADC_CHANNEL, &chan_cfg);
+
+        // calibration: converts raw to true millivolts regardless of the
+        // ADC's actual bit width / attenuation curve
+        adc_cali_curve_fitting_config_t cali_cfg = {
+            .unit_id = ADC_UNIT_1,
+            .chan = BAT_ADC_CHANNEL,
+            .atten = ADC_ATTEN_DB_12,
+            .bitwidth = ADC_BITWIDTH_12,
+        };
+        if (adc_cali_create_scheme_curve_fitting(&cali_cfg, &adc_cali) != ESP_OK) {
+            adc_cali = NULL;
+            ESP_LOGW(TAG, "ADC calibration unavailable, using rough scale");
+        }
+    }
+#endif
+
+    gpio_config_t key_io = {
+        .pin_bit_mask = 1ULL << PWR_KEY_GPIO,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&key_io);
+
+    ESP_LOGI(TAG, "discrete power: latch GPIO%d, key GPIO%d, batt ADC GPIO1",
+             PWR_CONTROL_GPIO, PWR_KEY_GPIO);
+    xTaskCreate(pmu_task, "pmu", 3072, NULL, 4, NULL);
+    return true;
+}
+
+#else  // -------------------------------------------------------- AXP2101 (AMOLED)
+#include "driver/i2c_master.h"
+
+// hardware PMU latches power itself - nothing to hold from firmware
+void pmu_power_hold_early(void) { }
 
 static const char *TAG = "axp2101";
 
@@ -149,3 +324,5 @@ bool pmu_start(int i2c_port) {
     xTaskCreate(pmu_task, "pmu", 3072, NULL, 4, NULL);
     return true;
 }
+
+#endif  // BOARD_LCD_1_85 / AXP2101

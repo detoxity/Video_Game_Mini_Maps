@@ -37,9 +37,10 @@
 #define AUTO_ROTATE_AXIS   0   // measured: gravity on X on the AMOLED 1.8
 #define AUTO_ROTATE_INVERT 1   // +10 m/s^2 = upright on this board
 
-// AXP2101 PMU (AMOLED 1.8 with battery): USB unplug or PWR short press
-// (on battery) shows "Saving...", writes the position to flash once and
-// powers off. Harmless on boards without the PMU.
+// Battery power management. AMOLED 1.8: AXP2101 PMU (USB unplug or PWR short
+// press shows "Saving...", saves position, powers off). LCD 1.85: no PMU -
+// discrete GPIO power latch (held on boot) + PWR long-press to save & off +
+// battery voltage on the ADC. Backend picked at compile time by board.
 #define USE_PMU 1
 
 // ---- on-screen overlays -----------------------------------------------------
