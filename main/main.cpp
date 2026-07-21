@@ -53,6 +53,9 @@
 #if USE_PMU
 #include "AXP2101_PMU.h"
 #endif
+#if RACEBOX_BLE
+#include "RaceBoxBLE.h"
+#endif
 
 #include "images/car_icon.h"
 #include "images/north_pointer.h"
@@ -471,6 +474,14 @@ extern "C" void app_main(void) {
 
     // track recorder buffer (fed by the GPS/demo task during perf runs)
     tracklog_init();
+
+#if RACEBOX_BLE
+    // advertise as a RaceBox Mini; the GPS driver publishes each NAV-PVT
+    racebox_ble_start(RACEBOX_BLE_SERIAL);
+#if RACEBOX_BLE_RECORD_ONLY
+    racebox_ble_set_streaming(false);   // opened by record mode
+#endif
+#endif
 
     // position input
 #if GPS_SOURCE == GPS_SOURCE_DEMO

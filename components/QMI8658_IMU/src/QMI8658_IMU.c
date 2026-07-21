@@ -13,15 +13,19 @@ static const char *TAG = "qmi8658";
 #define REG_WHO_AM_I   0x00   // reads 0x05
 #define REG_CTRL1      0x02   // bit6: register address auto-increment
 #define REG_CTRL2      0x03   // accel full scale + ODR
-#define REG_CTRL7      0x08   // bit0: accel enable
-#define REG_AX_L       0x35   // AX_L..AZ_H, 6 bytes, int16 LE
+#define REG_CTRL3      0x04   // gyro full scale + ODR
+#define REG_CTRL7      0x08   // bit0: accel enable, bit1: gyro enable
+#define REG_AX_L       0x35   // AX_L..AZ_H then GX_L..GZ_H, 12 bytes int16 LE
 
 #define ACCEL_CFG      0x25   // 8g range, 250Hz ODR
+#define GYRO_CFG       0x55   // +/-512 dps, 250Hz ODR
 #define MPS2_PER_LSB   (8.0f * 9.80665f / 32768.0f)
+#define DPS_PER_LSB    (512.0f / 32768.0f)
 
 static i2c_master_dev_handle_t dev = NULL;
 static volatile bool running = false;
 static volatile float last_a[3] = {0.0f, 0.0f, 0.0f};
+static volatile float last_g[3] = {0.0f, 0.0f, 0.0f};   // deg/s
 
 static esp_err_t reg_read(uint8_t reg, uint8_t *out, size_t n) {
     return i2c_master_transmit_receive(dev, &reg, 1, out, n, 100);
@@ -44,6 +48,14 @@ bool imu_get_accel(float *ax, float *ay, float *az) {
     return true;
 }
 
+bool imu_get_gyro(float *gx, float *gy, float *gz) {
+    if (!running) return false;
+    *gx = last_g[0];
+    *gy = last_g[1];
+    *gz = last_g[2];
+    return true;
+}
+
 static void imu_task(void *arg) {
     running = true;
     // fixed 200Hz cadence: vTaskDelayUntil holds the period regardless of
@@ -55,8 +67,9 @@ static void imu_task(void *arg) {
     for (;;) {
         vTaskDelayUntil(&next, period);
 
-        uint8_t d[6];
-        if (reg_read(REG_AX_L, d, 6) != ESP_OK) {
+        // one burst: accel XYZ then gyro XYZ (CTRL1 auto-increment)
+        uint8_t d[12];
+        if (reg_read(REG_AX_L, d, sizeof(d)) != ESP_OK) {
             continue;
         }
         uint32_t tick_ms = (uint32_t)(esp_timer_get_time() / 1000);
@@ -67,6 +80,10 @@ static void imu_task(void *arg) {
         last_a[0] = rx * MPS2_PER_LSB;
         last_a[1] = ry * MPS2_PER_LSB;
         last_a[2] = rz * MPS2_PER_LSB;
+
+        last_g[0] = (int16_t)(d[6]  | (d[7]  << 8)) * DPS_PER_LSB;
+        last_g[1] = (int16_t)(d[8]  | (d[9]  << 8)) * DPS_PER_LSB;
+        last_g[2] = (int16_t)(d[10] | (d[11] << 8)) * DPS_PER_LSB;
 
         perf_imu_feed(last_a[0], last_a[1], last_a[2], tick_ms);
     }
@@ -109,12 +126,13 @@ bool imu_start(int i2c_port) {
 
     if (reg_write(REG_CTRL1, 0x40) != ESP_OK ||     // address auto-increment
         reg_write(REG_CTRL2, ACCEL_CFG) != ESP_OK ||
-        reg_write(REG_CTRL7, 0x01) != ESP_OK) {     // accel on
+        reg_write(REG_CTRL3, GYRO_CFG) != ESP_OK ||
+        reg_write(REG_CTRL7, 0x03) != ESP_OK) {     // accel + gyro on
         ESP_LOGW(TAG, "QMI8658 init failed");
         return false;
     }
 
-    ESP_LOGI(TAG, "QMI8658 at 0x%02X, accel 8g @ 250Hz", found);
+    ESP_LOGI(TAG, "QMI8658 at 0x%02X, accel 8g + gyro 512dps @ 250Hz", found);
     // measurement core (see gps_uart_start): high priority (6, just under
     // the GPS reader) for deterministic launch-detection sampling, off the
     // core that runs rendering and tile streaming

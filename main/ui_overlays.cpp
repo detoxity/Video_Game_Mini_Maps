@@ -18,6 +18,9 @@
 #if USE_PMU
 #include "AXP2101_PMU.h"
 #endif
+#if RACEBOX_BLE
+#include "RaceBoxBLE.h"
+#endif
 
 // ---------------------------------------------------------------- widgets
 #if SHOW_SPEED
@@ -605,6 +608,9 @@ static void tick_button(void) {
                 record_mode = !record_mode;
 #if GPS_SOURCE == GPS_SOURCE_UART
                 gps_set_perf_mode(record_mode);
+#endif
+#if RACEBOX_BLE && RACEBOX_BLE_RECORD_ONLY
+                racebox_ble_set_streaming(record_mode);
 #endif
                 if (record_mode) {
                     lv_obj_remove_flag(rec_dot, LV_OBJ_FLAG_HIDDEN);

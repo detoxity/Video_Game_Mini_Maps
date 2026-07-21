@@ -71,6 +71,21 @@
 #define PERF_ROLLOUT_MM 305
 #define HISTORY_MAX 30
 
+// ---- RaceBox Mini BLE emulation ---------------------------------------------
+// Advertise as a RaceBox Mini and stream GNSS+IMU packets over BLE, so
+// RaceChrono / Solostorm / the RaceBox app can log from this device.
+// 1 = stream whenever a client is connected (default), 0 = feature off.
+#define RACEBOX_BLE 1
+// 1 = only stream while record mode is armed (saves air time), 0 = always.
+#define RACEBOX_BLE_RECORD_ONLY 0
+// Unit ID advertised after the fixed "RaceBox Mini " prefix. Must be below
+// 4000000000 - the RaceBox app will not connect to higher IDs. Give each
+// board its own; "" derives one from the MAC.
+// No leading zeros: the app strips them for display, then reads the padded
+// and stripped forms as two different units and reports being connected to
+// another RaceBox while streaming this one's data.
+#define RACEBOX_BLE_SERIAL "1234566666"
+
 // runs are timestamped from GPS UTC time (UBX NAV-PVT carries date/time
 // on both M8 and M10); local time = UTC + this offset in hours.
 // Kyiv: +2 winter / +3 summer (no DST logic - set for the season)

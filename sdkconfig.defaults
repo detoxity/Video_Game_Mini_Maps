@@ -55,3 +55,18 @@ CONFIG_LV_USE_DEMO_FLEX_LAYOUT=y
 CONFIG_LV_USE_DEMO_MULTILANG=y
 CONFIG_SPI_FLASH_SUPPORT_GD_CHIP=y
 CONFIG_ESP_WIFI_SOFTAP_SUPPORT=n
+# RaceBox Mini BLE emulation: NimBLE, peripheral only (central/observer off
+# and a single connection keep the internal-RAM cost down next to LVGL's
+# DMA draw buffers)
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_NIMBLE_ROLE_CENTRAL=n
+CONFIG_BT_NIMBLE_ROLE_OBSERVER=n
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
+CONFIG_BT_NIMBLE_NVS_PERSIST=n
+# NimBLE costs ~40KB of internal RAM, and the LVGL draw buffers are DMA
+# (internal) too. 100 lines x 368 x 2B x2 was 147KB and left nothing for
+# task stacks. 40 lines freed ~85KB but cost about ten frames a second, so
+# take 29KB of that back: 60 lines still leaves ~15KB of the headroom
+# NimBLE does not use. Drop back to 40 if allocations start failing.
+CONFIG_BSP_DISPLAY_LVGL_BUF_HEIGHT=60

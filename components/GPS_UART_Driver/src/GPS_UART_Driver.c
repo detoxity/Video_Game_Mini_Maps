@@ -12,6 +12,7 @@
 #include "GPS_UART_Driver.h"
 #include "PerfMeter.h"
 #include "TrackLog.h"
+#include "RaceBoxBLE.h"
 
 static const char *TAG = "gps_uart";
 
@@ -427,7 +428,12 @@ static void ubx_handle_frame(void) {
         fix_logged = true;
         ESP_LOGI(TAG, "first fix: type=%d satellites=%d", fix_type, num_sv);
     }
-    if (fix_type < 2 || !(flags & 0x01)) return;   // need a valid 2D/3D fix
+    if (fix_type < 2 || !(flags & 0x01)) {
+        // no fix yet, so nothing to measure - but BLE clients still want the
+        // frame, the app shows the search status from it
+        racebox_ble_publish(ubx.payload, ubx.len);
+        return;
+    }
 
     // velocity block: iTOW + NED velocity + Doppler ground speed.
     // fed to the performance meter on every valid fix, before the
@@ -445,6 +451,11 @@ static void ubx_handle_frame(void) {
         (void)vel_n; (void)vel_e;
         perf_feed(itow, tick_ms, gspeed_mms, vel_d);   // velD drives the slope figure
     }
+
+    // Telemetry goes out after the measurement path, never before it:
+    // notifying takes the NimBLE host mutex and can block this task, and
+    // timing is what this task exists for. Cheap no-op with no client.
+    racebox_ble_publish(ubx.payload, ubx.len);
 
     // cold-start fixes can scatter wildly before settling - only pass
     // positions the module itself rates better than 50m horizontal accuracy

@@ -19,6 +19,9 @@ bool imu_available(void);
 // latest accelerometer sample in m/s^2; returns false until streaming
 bool imu_get_accel(float *ax, float *ay, float *az);
 
+// latest gyroscope sample in degrees/second; false until streaming
+bool imu_get_gyro(float *gx, float *gy, float *gz);
+
 #ifdef __cplusplus
 }
 #endif
