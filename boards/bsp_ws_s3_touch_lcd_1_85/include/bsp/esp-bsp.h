@@ -54,8 +54,11 @@
 #define BSP_SD_GPIO_MISO        (GPIO_NUM_16)
 #define BSP_SD_MOUNT_POINT      "/sdcard"
 
-/* LVGL draw buffer: two 100-line buffers so LVGL renders while DMA flushes */
-#define BSP_LCD_DRAW_BUFF_SIZE     (BSP_LCD_H_RES * 100) // Frame buffer size in pixels
+/* LVGL draw buffer: two 60-line buffers so LVGL renders while DMA flushes.
+   They are DMA, so internal RAM, and NimBLE needs ~40KB of that too - at
+   100 lines the pair took 144KB and left nothing for it. The AMOLED board
+   is trimmed to the same 60 lines through its Kconfig. */
+#define BSP_LCD_DRAW_BUFF_SIZE     (BSP_LCD_H_RES * 60) // Frame buffer size in pixels
 #define BSP_LCD_DRAW_BUFF_DOUBLE   (1)
 
 #ifdef __cplusplus
