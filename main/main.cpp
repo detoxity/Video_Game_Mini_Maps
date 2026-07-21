@@ -464,9 +464,10 @@ extern "C" void app_main(void) {
     imu_start(BSP_I2C_NUM);
 #endif
 
-    // perf-meter timing calibration (compile-time default; keeps PerfMeter
-    // free of any app dependency)
+    // perf-meter timing calibration + launch rollout (compile-time defaults;
+    // keeps PerfMeter free of any app dependency)
     perf_set_calibration_offset(PERF_CALIBRATION_OFFSET_MS);
+    perf_set_rollout_mm(PERF_ROLLOUT_MM);
 
     // track recorder buffer (fed by the GPS/demo task during perf runs)
     tracklog_init();

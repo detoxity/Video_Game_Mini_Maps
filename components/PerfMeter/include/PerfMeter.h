@@ -21,6 +21,7 @@ typedef struct {
                        // distance over gaps is estimated by trapezoid)
     float slope_pct;   // course slope over the measured distance (Doppler
                        // velD integrated): negative = downhill (favorable)
+    bool launch_imu;   // true = launch instant from the IMU, false = from GNSS
     bool run_active;   // a launch is currently being timed
 } perf_results_t;
 
@@ -36,6 +37,11 @@ void perf_imu_feed(float ax, float ay, float az, uint32_t tick_ms);
 
 // apply a fixed timing offset (milliseconds) to all perf results.
 void perf_set_calibration_offset(int32_t offset_ms);
+
+// distance rolled before the clock starts (drag-strip / Dragy convention).
+// 0 = time from first movement; 305 = the standard 1-foot rollout (results
+// come out ~0.3s quicker). Unifies the IMU and GNSS launch references.
+void perf_set_rollout_mm(int32_t mm);
 
 // read the current calibration offset in milliseconds.
 int32_t perf_get_calibration_offset(void);

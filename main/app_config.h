@@ -64,6 +64,10 @@
 // calibration offset in milliseconds applied to all perf-meter times.
 // Set this to match a reference Dragy or other trusted timing source.
 #define PERF_CALIBRATION_OFFSET_MS 0
+// distance (mm) rolled before the clock starts. 0 = time from first movement
+// (matches a Dragy set to "no rollout"); 305 = the drag-strip 1-foot rollout
+// (~0.3s quicker times). Also unifies the IMU and GNSS launch references.
+#define PERF_ROLLOUT_MM 0
 #define HISTORY_MAX 30
 
 // runs are timestamped from GPS UTC time (UBX NAV-PVT carries date/time

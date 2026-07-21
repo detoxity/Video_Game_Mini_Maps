@@ -83,6 +83,8 @@ struct PerfRecord {
     uint32_t track_id;
     // course slope over the run, negative = downhill (Dragy-style)
     float slope_pct;
+    // 1 = launch instant came from the IMU, 0 = from GNSS speed
+    uint8_t launch_imu;
 };
 static PerfRecord history[HISTORY_MAX];
 static int history_count = 0;
@@ -90,30 +92,21 @@ static int history_count = 0;
 static void history_save(void) {
     nvs_handle_t h;
     if (nvs_open("minimap", NVS_READWRITE, &h) == ESP_OK) {
-        nvs_set_blob(h, "runs2", history, history_count * sizeof(PerfRecord));
+        nvs_set_blob(h, "runs3", history, history_count * sizeof(PerfRecord));
         nvs_commit(h);
         nvs_close(h);
     }
 }
 
 static void history_load(void) {
+    // key bumped to runs3 when the record grew (launch_imu field); older
+    // on-device history does not carry over - the size check rejects it
     nvs_handle_t h;
     if (nvs_open("minimap", NVS_READONLY, &h) != ESP_OK) return;
     size_t len = sizeof(history);
-    if (nvs_get_blob(h, "runs2", history, &len) == ESP_OK &&
+    if (nvs_get_blob(h, "runs3", history, &len) == ESP_OK &&
         len % sizeof(PerfRecord) == 0) {
         history_count = len / sizeof(PerfRecord);
-    } else {
-        // migrate pre-timestamp records ("runs": 5 floats each)
-        float old[HISTORY_MAX][5];
-        len = sizeof(old);
-        if (nvs_get_blob(h, "runs", old, &len) == ESP_OK) {
-            history_count = len / (5 * sizeof(float));
-            for (int i = 0; i < history_count; i++) {
-                history[i] = PerfRecord{old[i][0], old[i][1], old[i][2],
-                                        old[i][3], old[i][4], 0, 0, 0, 0, 0, 0.0f, 0, 0.0f};
-            }
-        }
     }
     nvs_close(h);
 }
@@ -152,7 +145,8 @@ static void history_add(const perf_results_t *r) {
         history_count = HISTORY_MAX - 1;
     }
     PerfRecord rec = {r->t_0_60, r->t_0_100, r->t_100_200, r->t_402m, r->v_402m_kmh,
-                      0, 0, 0, 0, 0, r->gap_s, 0, r->slope_pct};
+                      0, 0, 0, 0, 0, r->gap_s, 0, r->slope_pct,
+                      (uint8_t)(r->launch_imu ? 1 : 0)};
     stamp_local_time(&rec);
     rec.track_id = tracklog_save_csv();   // GPS trace of the run -> SD card
     history[history_count++] = rec;
@@ -259,10 +253,11 @@ static void history_refresh_list(void) {
         } else {
             when[0] = '\0';
         }
+        const char *src = r->launch_imu ? "IMU" : "GNS";
         if (gap) {
-            lv_label_set_text_fmt(hdr, "#%d   %s   !gap %.1fs", i + 1, when, r->gap_s);
+            lv_label_set_text_fmt(hdr, "#%d  %s  %s  !gap %.1fs", i + 1, when, src, r->gap_s);
         } else {
-            lv_label_set_text_fmt(hdr, "#%d   %s", i + 1, when);
+            lv_label_set_text_fmt(hdr, "#%d  %s  %s", i + 1, when, src);
         }
 
         lv_obj_t *lbl = lv_label_create(item);
@@ -365,6 +360,7 @@ static void track_view_open(int index) {
     } else {
         len += snprintf(buf + len, sizeof(buf) - len, "#%d", index + 1);
     }
+    len += snprintf(buf + len, sizeof(buf) - len, "  [%s]", r->launch_imu ? "IMU" : "GNS");
     if (r->t60 >= 0)      len += snprintf(buf + len, sizeof(buf) - len, "\n0-60  %.2fs", r->t60);
     if (r->t100 >= 0)     len += snprintf(buf + len, sizeof(buf) - len, "\n0-100  %.2fs", r->t100);
     if (r->t100_200 >= 0) len += snprintf(buf + len, sizeof(buf) - len, "\n100-200  %.2fs", r->t100_200);
@@ -540,8 +536,11 @@ static void tick_perf(void) {
         perf_get_results(&r);
         char buf[128];
         int n = 0;
+        const char *src = r.launch_imu ? "IMU" : "GNS";
         if (r.run_active && r.t_0_60 < 0) {
-            n = snprintf(buf, sizeof(buf), "RUN!");
+            n = snprintf(buf, sizeof(buf), "RUN! [%s]", src);
+        } else if (r.t_0_60 >= 0) {
+            n = snprintf(buf, sizeof(buf), "[%s]\n", src);
         }
         if (r.t_0_60 >= 0)
             n += snprintf(buf + n, sizeof(buf) - n, "0-60  %.2fs", r.t_0_60);

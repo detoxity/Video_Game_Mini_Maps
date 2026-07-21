@@ -12,7 +12,14 @@ static const char *TAG = "perf";
 #define V_STILL       220     // ~0.8 km/h: considered standing. Raised from
                               // 0.5 - GPS-only perf mode has standstill speed
                               // noise that kept it from arming at the line.
-#define V_LAUNCH      278     // ~1.0 km/h: run starts when crossed
+#define V_LAUNCH      556     // ~2.0 km/h: GNSS run TRIGGERS here. Raised from
+                              // 1.0 - standstill GPS speed noise reaches ~1 km/h
+                              // and could fake a GNSS launch / confirm a bump.
+#define V_LAUNCH_REF  278     // ~1.0 km/h: GNSS run is TIMED FROM here. The
+                              // trigger is 2 km/h (noise-proof) but t0 is the
+                              // earlier 1 km/h crossing, so the 2 km/h threshold
+                              // doesn't shorten the result (matches the IMU path
+                              // and the original 1 km/h calibration).
 #define STILL_ARM_COUNT 6     // net "still" samples needed to arm
 #define V_60_KMH      16667
 #define V_100_KMH     27778
@@ -36,6 +43,10 @@ static float accel_ms2 = 0.0f;
 static float rate_hz = 0.0f;
 
 static uint32_t t_launch = 0;      // iTOW at launch
+static uint32_t cand_t_launch = 0; // provisional t0: 1 km/h crossing, used if
+static bool cand_valid = false;    // the GNSS trigger (2 km/h) then confirms
+static int32_t rollout_mm = 0;     // clock starts after this much travel (0=off)
+static bool rollout_done = true;   // rollout point reached (or disabled)
 static float dist_mm = 0.0f;
 static float dh_mm = 0.0f;         // height change since launch (velD integrated,
                                    // negative = descending)
@@ -139,7 +150,7 @@ void perf_imu_feed(float ax, float ay, float az, uint32_t tick_ms) {
     }
 }
 
-static perf_results_t results = {-1, -1, -1, -1, -1, -1, 0, 0, false};
+static perf_results_t results = {-1, -1, -1, -1, -1, -1, 0, 0, false, false};
 static volatile uint32_t seq = 0;
 
 float perf_current_accel(void) { return accel_ms2; }
@@ -174,6 +185,7 @@ static void finish_run(const char *why) {
     state = ST_IDLE;
     still_samples = 0;
     launch_unconfirmed = false;
+    cand_valid = false;
     seq++;
 }
 
@@ -183,6 +195,10 @@ static int32_t calibration_offset_ms = 0;
 
 void perf_set_calibration_offset(int32_t offset_ms) {
     calibration_offset_ms = offset_ms;
+}
+
+void perf_set_rollout_mm(int32_t mm) {
+    rollout_mm = (mm > 0) ? mm : 0;
 }
 
 int32_t perf_get_calibration_offset(void) {
@@ -260,6 +276,20 @@ void perf_feed(uint32_t itow_ms, uint32_t tick_ms, int32_t gspeed_mms, int32_t v
         break;
 
     case ST_ARMED:
+        // remember the moment speed first crossed the low reference (1 km/h)
+        // while accelerating - this is where the GNSS run will be timed from,
+        // captured before the 2 km/h trigger so no accuracy is lost. A drop
+        // back to standstill means it was noise; discard the candidate.
+        if (v < V_STILL) {
+            cand_valid = false;
+        } else if (!cand_valid && v_prev < V_LAUNCH_REF && v >= V_LAUNCH_REF &&
+                   accel_ms2 > 0.0f) {
+            cand_t_launch = itow_ms - dt;
+            float fr = (v != v_prev) ? (float)(V_LAUNCH_REF - v_prev) / (float)(v - v_prev) : 0.0f;
+            if (fr > 0.0f && fr <= 1.0f) cand_t_launch += (uint32_t)(fr * dt);
+            cand_valid = true;
+        }
+
         // IMU-primary: the accelerometer sees movement ~1 sample before GNSS
         // Doppler does, so it drives the launch instant - but only if the
         // mark is plausible, and the run stays provisional until GNSS
@@ -273,11 +303,14 @@ void perf_feed(uint32_t itow_ms, uint32_t tick_ms, int32_t gspeed_mms, int32_t v
                 launch_unconfirmed = true;
                 dist_mm = 0.0f;
                 dh_mm = 0.0f;
+                rollout_done = (rollout_mm == 0);
                 results.t_0_60 = results.t_0_100 = results.t_0_200 = -1.0f;
                 results.t_100_200 = results.t_402m = results.v_402m_kmh = -1.0f;
                 results.gap_s = 0.0f;
                 results.slope_pct = 0.0f;
+                results.launch_imu = true;
                 results.run_active = true;
+                cand_valid = false;
                 seq++;
                 ESP_LOGI(TAG, "launch! (IMU, awaiting GNSS confirm)");
                 break;
@@ -287,17 +320,26 @@ void perf_feed(uint32_t itow_ms, uint32_t tick_ms, int32_t gspeed_mms, int32_t v
         if (v >= V_LAUNCH && accel_ms2 > 0.0f) {
             state = ST_RUN;
             launch_unconfirmed = false;
-            // interpolate the true standstill->launch crossing
-            t_launch = itow_ms - dt;
-            float f = (v != v_prev) ? (float)(V_LAUNCH - v_prev) / (float)(v - v_prev) : 0.0f;
-            if (f > 0.0f && f <= 1.0f) t_launch += (uint32_t)(f * dt);
+            // time from the 1 km/h crossing captured above (accurate); only
+            // if we somehow missed it (e.g. a sample skipped straight past
+            // 1 km/h) fall back to interpolating the 2 km/h crossing.
+            if (cand_valid) {
+                t_launch = cand_t_launch;
+            } else {
+                t_launch = itow_ms - dt;
+                float f = (v != v_prev) ? (float)(V_LAUNCH - v_prev) / (float)(v - v_prev) : 0.0f;
+                if (f > 0.0f && f <= 1.0f) t_launch += (uint32_t)(f * dt);
+            }
+            cand_valid = false;
 
             dist_mm = 0.0f;
             dh_mm = 0.0f;
+            rollout_done = (rollout_mm == 0);
             results.t_0_60 = results.t_0_100 = results.t_0_200 = -1.0f;
             results.t_100_200 = results.t_402m = results.v_402m_kmh = -1.0f;
             results.gap_s = 0.0f;
             results.slope_pct = 0.0f;
+            results.launch_imu = false;
             results.run_active = true;
             seq++;
             ESP_LOGI(TAG, "launch! (GNSS)");
@@ -314,6 +356,7 @@ void perf_feed(uint32_t itow_ms, uint32_t tick_ms, int32_t gspeed_mms, int32_t v
                 ESP_LOGI(TAG, "false launch (no GNSS movement) - re-arming");
                 state = ST_ARMED;
                 launch_unconfirmed = false;
+                cand_valid = false;
                 results.run_active = false;
                 seq++;
                 break;   // post-switch updates v_prev/vd_prev/t_prev
@@ -327,6 +370,17 @@ void perf_feed(uint32_t itow_ms, uint32_t tick_ms, int32_t gspeed_mms, int32_t v
         // height change from Doppler down-velocity (much cleaner than GNSS
         // altitude); negative = descending
         dh_mm -= (float)(veld_mms + vd_prev) * 0.5f * (float)dt / 1000.0f;
+
+        // 1-foot rollout: hold the clock until the car has travelled
+        // rollout_mm, then move t0 to that interpolated instant. No milestone
+        // is reachable within a foot, so ordering vs the checks below is safe.
+        if (!rollout_done && dist_mm >= (float)rollout_mm) {
+            float f = (d_step > 0.0f) ? ((float)rollout_mm - dist_before) / d_step : 1.0f;
+            if (f < 0.0f) f = 0.0f;
+            if (f > 1.0f) f = 1.0f;
+            t_launch = (itow_ms - dt) + (uint32_t)(f * dt);
+            rollout_done = true;
+        }
 
         if (results.t_0_60 < 0 && v >= V_60_KMH) {
             results.t_0_60 = cross_time_ms(itow_ms, dt, v, V_60_KMH) / 1000.0f;
