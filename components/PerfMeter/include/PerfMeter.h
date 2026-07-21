@@ -38,9 +38,9 @@ void perf_imu_feed(float ax, float ay, float az, uint32_t tick_ms);
 // apply a fixed timing offset (milliseconds) to all perf results.
 void perf_set_calibration_offset(int32_t offset_ms);
 
-// distance rolled before the clock starts (drag-strip / Dragy convention).
-// 0 = time from first movement; 305 = the standard 1-foot rollout (results
-// come out ~0.3s quicker). Unifies the IMU and GNSS launch references.
+// NHRA roll-out, applied to the quarter-mile ET only (0-60/0-100 stay timed
+// from first movement, as Dragy does). 305 = the standard 1 foot: the ET
+// clock starts once the car has rolled that far. 0 disables it.
 void perf_set_rollout_mm(int32_t mm);
 
 // read the current calibration offset in milliseconds.

@@ -42,10 +42,11 @@ static uint32_t t_prev = 0;        // previous iTOW, ms
 static float accel_ms2 = 0.0f;
 static float rate_hz = 0.0f;
 
-static uint32_t t_launch = 0;      // iTOW at launch
+static uint32_t t_launch = 0;      // iTOW at launch (speed metrics zero here)
+static uint32_t t_launch_et = 0;   // quarter-mile zero: t_launch + NHRA roll-out
 static uint32_t cand_t_launch = 0; // provisional t0: 1 km/h crossing, used if
 static bool cand_valid = false;    // the GNSS trigger (2 km/h) then confirms
-static int32_t rollout_mm = 0;     // clock starts after this much travel (0=off)
+static int32_t rollout_mm = 0;     // ET clock starts after this travel (0=off)
 static bool rollout_done = true;   // rollout point reached (or disabled)
 static float dist_mm = 0.0f;
 static float dh_mm = 0.0f;         // height change since launch (velD integrated,
@@ -300,6 +301,7 @@ void perf_feed(uint32_t itow_ms, uint32_t tick_ms, int32_t gspeed_mms, int32_t v
             if (ip <= itow_ms && itow_ms - ip < IMU_LAUNCH_MAX_AGE_MS) {
                 state = ST_RUN;
                 t_launch = ip;
+                t_launch_et = ip;   // moved to the roll-out point below if enabled
                 launch_unconfirmed = true;
                 dist_mm = 0.0f;
                 dh_mm = 0.0f;
@@ -331,6 +333,7 @@ void perf_feed(uint32_t itow_ms, uint32_t tick_ms, int32_t gspeed_mms, int32_t v
                 if (f > 0.0f && f <= 1.0f) t_launch += (uint32_t)(f * dt);
             }
             cand_valid = false;
+            t_launch_et = t_launch;   // moved to the roll-out point if enabled
 
             dist_mm = 0.0f;
             dh_mm = 0.0f;
@@ -371,14 +374,15 @@ void perf_feed(uint32_t itow_ms, uint32_t tick_ms, int32_t gspeed_mms, int32_t v
         // altitude); negative = descending
         dh_mm -= (float)(veld_mms + vd_prev) * 0.5f * (float)dt / 1000.0f;
 
-        // 1-foot rollout: hold the clock until the car has travelled
-        // rollout_mm, then move t0 to that interpolated instant. No milestone
-        // is reachable within a foot, so ordering vs the checks below is safe.
+        // NHRA roll-out, applied to the quarter-mile ET only: the strip's
+        // clock starts when the car leaves the stage beam ~1 foot in, while
+        // 0-60/0-100 are conventionally timed from first movement. So this
+        // sets a second zero (t_launch_et) used solely by the 402m result.
         if (!rollout_done && dist_mm >= (float)rollout_mm) {
             float f = (d_step > 0.0f) ? ((float)rollout_mm - dist_before) / d_step : 1.0f;
             if (f < 0.0f) f = 0.0f;
             if (f > 1.0f) f = 1.0f;
-            t_launch = (itow_ms - dt) + (uint32_t)(f * dt);
+            t_launch_et = (itow_ms - dt) + (uint32_t)(f * dt);
             rollout_done = true;
         }
 
@@ -405,7 +409,7 @@ void perf_feed(uint32_t itow_ms, uint32_t tick_ms, int32_t gspeed_mms, int32_t v
         }
         if (results.t_402m < 0 && dist_mm >= DIST_QUARTER) {
             float f = (d_step > 0.0f) ? (DIST_QUARTER - dist_before) / d_step : 1.0f;
-            results.t_402m = ((float)(itow_ms - dt - t_launch) + f * (float)dt) / 1000.0f;
+            results.t_402m = ((float)(itow_ms - dt - t_launch_et) + f * (float)dt) / 1000.0f;
             results.t_402m += (float)calibration_offset_ms / 1000.0f;
             // trap speed at the interpolated crossing instant, not at the
             // (up to one sample later) detection sample

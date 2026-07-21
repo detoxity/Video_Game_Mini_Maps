@@ -233,7 +233,7 @@ static void history_refresh_list(void) {
         fmt_time(t60, sizeof(t60), r->t60);
         fmt_time(t100, sizeof(t100), r->t100);
         fmt_time(t12, sizeof(t12), r->t100_200);
-        if (r->t402 >= 0) snprintf(t402, sizeof(t402), "%.2f @%.0f", r->t402, r->v402);
+        if (r->t402 >= 0) snprintf(t402, sizeof(t402), "%.2f @%.1f", r->t402, r->v402);
         else              snprintf(t402, sizeof(t402), "-");
         if (r->slope_pct != 0.0f) {
             size_t l = strlen(t402);
@@ -364,7 +364,7 @@ static void track_view_open(int index) {
     if (r->t60 >= 0)      len += snprintf(buf + len, sizeof(buf) - len, "\n0-60  %.2fs", r->t60);
     if (r->t100 >= 0)     len += snprintf(buf + len, sizeof(buf) - len, "\n0-100  %.2fs", r->t100);
     if (r->t100_200 >= 0) len += snprintf(buf + len, sizeof(buf) - len, "\n100-200  %.2fs", r->t100_200);
-    if (r->t402 >= 0)     len += snprintf(buf + len, sizeof(buf) - len, "\n402m  %.2fs @%.0f", r->t402, r->v402);
+    if (r->t402 >= 0)     len += snprintf(buf + len, sizeof(buf) - len, "\n402m  %.2fs @%.1f", r->t402, r->v402);
     if (r->slope_pct != 0.0f)
         len += snprintf(buf + len, sizeof(buf) - len, "\nslope %+.1f%%", r->slope_pct);
     if (r->gap_s > 0.05f) len += snprintf(buf + len, sizeof(buf) - len, "\n! gps gap %.1fs", r->gap_s);
@@ -559,7 +559,7 @@ static void tick_perf(void) {
         if (r.t_100_200 >= 0)
             n += snprintf(buf + n, sizeof(buf) - n, "\n100-200  %.2fs", r.t_100_200);
         if (r.t_402m >= 0)
-            n += snprintf(buf + n, sizeof(buf) - n, "\n402m  %.2fs @%.0f", r.t_402m, r.v_402m_kmh);
+            n += snprintf(buf + n, sizeof(buf) - n, "\n402m  %.2fs @%.1f", r.t_402m, r.v_402m_kmh);
         if (r.slope_pct != 0.0f)
             n += snprintf(buf + n, sizeof(buf) - n, "\nslope %+.1f%%", r.slope_pct);
         if (r.gap_s > 0.05f)

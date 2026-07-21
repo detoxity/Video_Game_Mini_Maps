@@ -61,13 +61,14 @@
 // Record mode also switches the GPS module: cruise = multi-GNSS 10Hz
 // (best TTFF/accuracy), record = GPS-only at max rate (18-25Hz timing).
 #define SHOW_PERF 1
-// calibration offset in milliseconds applied to all perf-meter times.
-// Set this to match a reference Dragy or other trusted timing source.
+// Fixed offset in MILLISECONDS added to every perf-meter time. This is a
 #define PERF_CALIBRATION_OFFSET_MS 0
-// distance (mm) rolled before the clock starts. 0 = time from first movement
-// (matches a Dragy set to "no rollout"); 305 = the drag-strip 1-foot rollout
-// (~0.3s quicker times). Also unifies the IMU and GNSS launch references.
-#define PERF_ROLLOUT_MM 0
+// NHRA roll-out (millimetres), applied to the QUARTER MILE only - the strip
+// clock starts when the car leaves the stage beam ~1 foot in. 0-60/0-100 stay
+// timed from first movement, which is how Dragy reports them too.
+//   305 = 1 foot, NHRA/Dragy standard (default)
+//   0   = no roll-out, 402m timed from first movement as well
+#define PERF_ROLLOUT_MM 305
 #define HISTORY_MAX 30
 
 // runs are timestamped from GPS UTC time (UBX NAV-PVT carries date/time
