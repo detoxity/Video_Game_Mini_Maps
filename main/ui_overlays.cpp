@@ -487,11 +487,21 @@ static void tick_battery(void) {
 #else
     int mv = -1;
 #endif
+    char buf[40];
+    int len;
     if (mv > 0) {
-        lv_label_set_text_fmt(batt_label, "%d.%02dV  %dsat", mv / 1000, (mv % 1000) / 10, gps_sat_count);
+        len = snprintf(buf, sizeof(buf), "%d.%02dV %dsat", mv / 1000, (mv % 1000) / 10, gps_sat_count);
     } else {
-        lv_label_set_text_fmt(batt_label, "-.--V  %dsat", gps_sat_count);
+        len = snprintf(buf, sizeof(buf), "-.--V %dsat", gps_sat_count);
     }
+#if SHOW_PERF
+    // measured GPS update rate (confirms the configured 10/20 Hz is live)
+    int hz = (int)(perf_sample_rate() + 0.5f);
+    if (hz > 0 && len < (int)sizeof(buf)) {
+        snprintf(buf + len, sizeof(buf) - len, " %dHz", hz);
+    }
+#endif
+    lv_label_set_text(batt_label, buf);
 #endif
 }
 

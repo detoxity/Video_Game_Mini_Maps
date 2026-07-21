@@ -164,12 +164,15 @@ static void ubx_config_navigation(void) {
 // constellations + nav rate for one of the two operating modes
 static void ubx_config_mode(bool perf) {
     if (perf) {
-        // GPS + QZSS only (u-blox: keep QZSS with GPS) - allows max rate
+        // GPS + Galileo + QZSS + SBAS (no GLONASS/BeiDou). Two major
+        // constellations + augmentation is the M10's 20Hz tier - more
+        // satellites and cleaner Doppler velocity than GPS-only-at-25Hz,
+        // and interpolation makes the 25->20 Hz difference negligible.
         const uint8_t gnss[] = {
             0x00, 0x00, 0xFF, 0x07,
             0x00, 0x08, 0x10, 0x00, 0x01, 0x00, 0x01, 0x01,  // GPS     on
-            0x01, 0x01, 0x03, 0x00, 0x00, 0x00, 0x01, 0x01,  // SBAS    off
-            0x02, 0x04, 0x08, 0x00, 0x00, 0x00, 0x01, 0x01,  // Galileo off
+            0x01, 0x01, 0x03, 0x00, 0x01, 0x00, 0x01, 0x01,  // SBAS    on
+            0x02, 0x04, 0x08, 0x00, 0x01, 0x00, 0x01, 0x01,  // Galileo on
             0x03, 0x08, 0x10, 0x00, 0x00, 0x00, 0x01, 0x01,  // BeiDou  off
             0x04, 0x00, 0x08, 0x00, 0x00, 0x00, 0x03, 0x01,  // IMES    off
             0x05, 0x00, 0x03, 0x00, 0x01, 0x00, 0x05, 0x01,  // QZSS    on
@@ -178,8 +181,8 @@ static void ubx_config_mode(bool perf) {
         ubx_send(0x06, 0x3E, gnss, sizeof(gnss));
         const uint8_t vs_sig[] = {
             0x1F, 0x00, 0x31, 0x10, 0x01,       // GPS  on
-            0x20, 0x00, 0x31, 0x10, 0x00,       // SBAS off
-            0x21, 0x00, 0x31, 0x10, 0x00,       // GAL  off
+            0x20, 0x00, 0x31, 0x10, 0x01,       // SBAS on
+            0x21, 0x00, 0x31, 0x10, 0x01,       // GAL  on
             0x22, 0x00, 0x31, 0x10, 0x00,       // BDS  off
             0x24, 0x00, 0x31, 0x10, 0x01,       // QZSS on
             0x25, 0x00, 0x31, 0x10, 0x00,       // GLO  off
@@ -211,9 +214,10 @@ static void ubx_config_mode(bool perf) {
     }
     vTaskDelay(pdMS_TO_TICKS(500));   // GNSS engine restarts after this
 
-    // nav rate: ladder of legacy CFG-RATE requests, first ACK wins
-    // (perf: 25/18/10Hz, cruise: 10/5Hz); VALSET fallback for M10
-    const uint16_t perf_rates[]   = {40, 55, 100};
+    // nav rate: ladder of legacy CFG-RATE requests, first ACK wins.
+    // perf 20/15/10Hz (M10 caps GPS+Galileo at 20Hz; an M8 would land
+    // lower), cruise 10/5Hz. VALSET fallback for M10.
+    const uint16_t perf_rates[]   = {50, 66, 100};
     const uint16_t cruise_rates[] = {100, 200};
     const uint16_t *rates = perf ? perf_rates : cruise_rates;
     size_t n_rates = perf ? 3 : 2;
