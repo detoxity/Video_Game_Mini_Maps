@@ -19,6 +19,13 @@ static const char *TAG = "gps_uart";
 // at 18-25Hz UBX the old 2KB buffer held ~1s of stream - any longer stall
 // overflowed it and the resulting gap silently shortened the integrated
 // 402m distance. 8KB rides out multi-second hiccups.
+// Testing knob: 0 keeps the Dragy-style constellation config from boot even
+// when a run is armed, so the perf meter can be evaluated on it - the theory
+// being Dragy trades rate for more satellites for a reason. 1 restores the
+// normal behaviour where arming a run switches the receiver to the 20Hz
+// two-constellation perf config.
+#define GPS_PERF_RECONFIG 0
+
 #define RX_BUF_SIZE   8192
 #define LINE_MAX      128
 
@@ -190,26 +197,32 @@ static void ubx_config_mode(bool perf) {
         };
         valset_send(vs_sig, sizeof(vs_sig));
     } else {
-        // cruise: everything on except BeiDou/IMES (M8 handles 3 concurrent
-        // + SBAS/QZSS augmentation; best TTFF and urban reliability)
+        // cruise / default: every constellation on, matching what a real
+        // Dragy configures - GPS + Galileo + BeiDou + GLONASS, plus SBAS/QZSS
+        // augmentation. Dragy trades rate for satellite count; at the 10Hz
+        // cruise rate the M10 carries all of them. BeiDou uses B1C, Dragy's
+        // choice (modernised signal, better multipath) - the legacy CFG-GNSS
+        // below can only ask for B1I on an M8, but the VALSET picks B1C on M10.
         const uint8_t gnss[] = {
             0x00, 0x00, 0xFF, 0x07,
             0x00, 0x08, 0x10, 0x00, 0x01, 0x00, 0x01, 0x01,  // GPS     on
             0x01, 0x01, 0x03, 0x00, 0x01, 0x00, 0x01, 0x01,  // SBAS    on
             0x02, 0x04, 0x08, 0x00, 0x01, 0x00, 0x01, 0x01,  // Galileo on
-            0x03, 0x08, 0x10, 0x00, 0x00, 0x00, 0x01, 0x01,  // BeiDou  off
+            0x03, 0x08, 0x10, 0x00, 0x01, 0x00, 0x01, 0x01,  // BeiDou  on
             0x04, 0x00, 0x08, 0x00, 0x00, 0x00, 0x03, 0x01,  // IMES    off
             0x05, 0x00, 0x03, 0x00, 0x01, 0x00, 0x05, 0x01,  // QZSS    on
             0x06, 0x08, 0x0E, 0x00, 0x01, 0x00, 0x01, 0x01,  // GLONASS on
         };
         ubx_send(0x06, 0x3E, gnss, sizeof(gnss));
         const uint8_t vs_sig[] = {
-            0x1F, 0x00, 0x31, 0x10, 0x01,       // GPS  on
-            0x20, 0x00, 0x31, 0x10, 0x01,       // SBAS on
-            0x21, 0x00, 0x31, 0x10, 0x01,       // GAL  on
-            0x22, 0x00, 0x31, 0x10, 0x00,       // BDS  off
-            0x24, 0x00, 0x31, 0x10, 0x01,       // QZSS on
-            0x25, 0x00, 0x31, 0x10, 0x01,       // GLO  on
+            0x1F, 0x00, 0x31, 0x10, 0x01,       // GPS      on
+            0x20, 0x00, 0x31, 0x10, 0x01,       // SBAS     on
+            0x21, 0x00, 0x31, 0x10, 0x01,       // GAL      on
+            0x22, 0x00, 0x31, 0x10, 0x01,       // BDS      on
+            0x0D, 0x00, 0x31, 0x10, 0x00,       // BDS B1I  off
+            0x0F, 0x00, 0x31, 0x10, 0x01,       // BDS B1C  on  (Dragy's choice)
+            0x24, 0x00, 0x31, 0x10, 0x01,       // QZSS     on
+            0x25, 0x00, 0x31, 0x10, 0x01,       // GLO      on
         };
         valset_send(vs_sig, sizeof(vs_sig));
     }
@@ -259,8 +272,14 @@ static void gps_cfg_task(void *arg) {
         vTaskDelay(pdMS_TO_TICKS(250));
         if (perf_mode_requested != applied) {
             applied = perf_mode_requested;
+#if !GPS_PERF_RECONFIG
+            // testing: hold the Dragy-style default config across runs to
+            // evaluate the perf meter on it
+            ESP_LOGI(TAG, "perf reconfig disabled - keeping default GNSS config");
+#else
             ESP_LOGI(TAG, "switching to %s mode", applied ? "PERF" : "CRUISE");
             ubx_config_mode(applied);
+#endif
         }
     }
 }
